@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live STT Transcription</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 80%;
+            max-width: 600px;
+        }
+        #transcription {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            min-height: 150px;
+            text-align: left;
+            background: #fafafa;
+            white-space: pre-wrap;
+            font-size: 1.1rem;
+            line-height: 1.5;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 1rem;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            margin: 0 10px;
+            transition: background 0.3s;
+        }
+        #startBtn {
+            background-color: #28a745;
+            color: white;
+        }
+        #startBtn:disabled {
+            background-color: #ccc;
+        }
+        #stopBtn {
+            background-color: #dc3545;
+            color: white;
+        }
+        #stopBtn:disabled {
+            background-color: #ccc;
+        }
+        .status {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Live STT Preview</h1>
+    <div class="status" id="status">Status: Ready</div>
+    <div class="controls">
+        <button id="startBtn">Start Listening</button>
+        <button id="stopBtn" disabled>Stop Listening</button>
+    </div>
+    <div id="transcription">Your transcription will appear here...</div>
+</div>
+
+<script>
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const transcriptionDiv = document.getElementById('transcription');
+    const statusDiv = document.getElementById('status');
+
+    // Use Web Speech API (the best free, low-latency browser-native option)
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+        statusDiv.textContent = "Status: Web Speech API not supported in this browser. Please use Chrome.";
+        startBtn.disabled = true;
+    } else {
+        const recognition = new SpeechRecognition();
+        
+        // Settings for real-time, low-latency experience
+        recognition.continuous = true; // Keep listening even if user pauses
+        recognition.interimResults = true; // Show results as they are being processed
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => {
+            statusDiv.textContent = "Status: Listening...";
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+        };
+
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+
+            // Use a persistent store for final transcripts to avoid clearing them
+            if (finalTranscript) {
+                if (transcriptionDiv.textContent === 'Your transcription will appear here...') {
+                    transcriptionDiv.textContent = '';
+                }
+                transcriptionDiv.innerHTML += finalTranscript + ' ';
+            }
+            
+            // Special handling for interim (greyed out) text for low-latency feel
+            const currentText = transcriptionDiv.innerText;
+            // Note: This simple implementation appends final text. 
+            // For a true "preview" look, we can use a separate element for interim results.
+        };
+
+        // Improved onresult to show interim text
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript + ' ';
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+
+            if (finalTranscript) {
+                if (transcriptionDiv.innerHTML === 'Your transcription will appear here...') {
+                    transcriptionDiv.innerHTML = '';
+                }
+                // Append final text to a hidden or separate storage if needed, 
+                // but here we just update the div.
+            }
+            
+            // To properly show interim results without duplicating final ones:
+            // We will use a more robust approach: store final results in a variable.
+        };
+
+        // Let's rewrite the onresult logic for better UX
+        let finalResults = '';
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalResults += event.results[i][0].transcript + ' ';
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+            transcriptionDiv.innerHTML = `<span style="color: black">${finalResults}</span><span style="color: #888">${interimTranscript}</span>`;
+        };
+
+        recognition.onerror = (event) => {
+            statusDiv.textContent = `Status: Error occurred - ${event.error}`;
+            stopListening();
+        };
+
+        recognition.onend = () => {
+            statusDiv.textContent = "Status: Stopped";
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        };
+
+        function stopListening() {
+            recognition.stop();
+            stopBtn.disabled = true;
+            startBtn.disabled = false;
+        }
+
+        startBtn.onclick = () => {
+            finalResults = '';
+            transcriptionDiv.innerHTML = '';
+            recognition.start();
+        };
+
+        stopBtn.onclick = stopListening;
+    }
+</script>
+
+</body>
+</html>

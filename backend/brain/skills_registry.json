@@ -1,0 +1,170 @@
+[
+  {
+    "name": "open_app",
+    "description": "Open any installed application on Windows. Use for: chrome, notepad, calculator, vscode, spotify, discord, whatsapp, terminal, etc.",
+    "trigger": ["open", "launch", "start", "run"],
+    "inputs": ["app_name"],
+    "example": "open chrome → {\"skill\":\"open_app\",\"parameters\":{\"app_name\":\"chrome\"},\"action\":\"execute\"}",
+    "execution": "system_command"
+  },
+  {
+    "name": "close_app",
+    "description": "Close/kill an application by name.",
+    "trigger": ["close", "exit", "kill", "quit"],
+    "inputs": ["app_name"],
+    "execution": "system_command"
+  },
+  {
+    "name": "web_search",
+    "description": "Open the browser and search for any query. Use for: 'search for X', 'find X online', 'look up X', 'open browser and search', 'latest news', 'google something'.",
+    "trigger": ["search", "find", "look up", "browse", "open browser", "news", "google", "research"],
+    "inputs": ["query", "browser"],
+    "example": "search for latest cricket scores → {\"skill\":\"web_search\",\"parameters\":{\"query\":\"latest cricket scores\"},\"action\":\"execute\"}",
+    "execution": "browser"
+  },
+  {
+    "name": "play_youtube",
+    "description": "Search and play a video or song on YouTube. Use for: 'play [song] on youtube', 'youtube [query]', 'put on [music]', 'play [video]', 'watch [something]'. Opens YouTube search and auto-clicks the first result.",
+    "trigger": ["play", "youtube", "watch", "put on", "queue up", "music", "song", "video"],
+    "inputs": ["query"],
+    "example": "play despacito on youtube → {\"skill\":\"play_youtube\",\"parameters\":{\"query\":\"despacito\"},\"action\":\"execute\"}",
+    "execution": "browser_agent"
+  },
+  {
+    "name": "read_headlines",
+    "description": "Read and return actual news headlines from the internet for a topic. Use when user says 'read the news', 'what does it say', 'read the headlines', 'summarize the news'. Uses the last searched topic if no query given.",
+    "trigger": ["read news", "read headlines", "what does it say", "what happened", "tell me", "summarize news", "latest on"],
+    "inputs": ["query"],
+    "execution": "rss_fetch"
+  },
+  {
+    "name": "whatsapp_send_message",
+    "description": "Send a WhatsApp message to a contact using WhatsApp Desktop or Web.",
+    "trigger": ["whatsapp", "send message", "message"],
+    "inputs": ["contact", "message"],
+    "execution": "system_command"
+  },
+  {
+    "name": "whatsapp_search_contact",
+    "description": "Search for a contact on WhatsApp and open the chat, without sending a message.",
+    "trigger": ["search whatsapp", "find on whatsapp", "lookup contact", "whatsapp search"],
+    "inputs": ["contact"],
+    "execution": "system_command"
+  },
+  {
+    "name": "volume_control",
+    "description": "Adjust system volume — increase, decrease, mute or unmute.",
+    "trigger": ["volume", "mute", "unmute", "louder", "quieter"],
+    "inputs": ["action"],
+    "execution": "system_command"
+  },
+  {
+    "name": "shutdown",
+    "description": "Shutdown, restart, or sleep the computer. Modes: shutdown, restart, sleep.",
+    "trigger": ["shutdown", "restart", "turn off", "power off", "sleep", "hibernate"],
+    "inputs": ["mode"],
+    "execution": "system_command"
+  },
+  {
+    "name": "type_text",
+    "description": "Type text at the current cursor/focus position.",
+    "trigger": ["type", "write text", "input text"],
+    "inputs": ["text"],
+    "execution": "system_command"
+  },
+  {
+    "name": "press_key",
+    "description": "Press a keyboard key or hotkey combo. Examples: 'enter', 'ctrl+c', 'alt+f4', 'f5'.",
+    "trigger": ["press", "hotkey", "shortcut", "key"],
+    "inputs": ["key"],
+    "execution": "system_command"
+  },
+  {
+    "name": "write_code",
+    "description": "Write code to a file and open it in VS Code or Notepad. Supports Python, JavaScript, HTML, CSS, C++, Java, etc. Creates the file on the Desktop by default.",
+    "trigger": ["write code", "create script", "code for", "write a program", "write a script", "coding"],
+    "inputs": ["code", "filename", "language"],
+    "example": "write a python script to sort a list → {\"skill\":\"write_code\",\"parameters\":{\"code\":\"...\",\"language\":\"python\",\"filename\":\"sort.py\"},\"action\":\"execute\"}",
+    "execution": "file_system"
+  },
+  {
+    "name": "run_command",
+    "description": "Run a terminal/PowerShell command and return the output. Use for system queries, running scripts, checking status, etc.",
+    "trigger": ["run command", "terminal", "execute command", "powershell", "cmd", "shell"],
+    "inputs": ["command"],
+    "example": "what time is it → {\"skill\":\"run_command\",\"parameters\":{\"command\":\"powershell -Command Get-Date\"},\"action\":\"execute\"}",
+    "execution": "terminal"
+  },
+  {
+    "name": "screenshot",
+    "description": "Take a screenshot of the current screen and save it to the Desktop.",
+    "trigger": ["screenshot", "screen capture", "capture screen", "print screen"],
+    "inputs": [],
+    "execution": "vision"
+  },
+  {
+    "name": "system_info",
+    "description": "Get system information — OS, processor, machine name, user, etc.",
+    "trigger": ["system info", "computer info", "what system", "specs"],
+    "inputs": [],
+    "execution": "system_query"
+  },
+  {
+    "name": "click_ui_element",
+    "description": "Click a button or UI element inside a Windows app by its name.",
+    "trigger": ["click", "press button"],
+    "inputs": ["app_name", "element_name"],
+    "execution": "system_command"
+  },
+  {
+    "name": "focus_window",
+    "description": "Bring an application window to the foreground / switch to it.",
+    "trigger": ["focus", "switch to", "bring up", "go to"],
+    "inputs": ["app_name"],
+    "execution": "system_command"
+  },
+  {
+    "name": "set_reminder",
+    "description": "Set a reminder that triggers after a specified number of minutes with a message. Uses TTS and system notification.",
+    "trigger": ["remind", "timer", "alarm", "remind me", "set reminder", "in X minutes"],
+    "inputs": ["time", "message"],
+    "example": "remind me in 10 minutes to drink water → {\"skill\":\"set_reminder\",\"parameters\":{\"time\":10,\"message\":\"Drink water\"},\"action\":\"execute\"}",
+    "execution": "background_task"
+  },
+  {
+    "name": "create_folder",
+    "description": "Create a new folder at a specific path or on the desktop. Defaults to Desktop if no path given.",
+    "trigger": ["create folder", "new folder", "make folder"],
+    "inputs": ["folder_name", "path"],
+    "execution": "system_command"
+  },
+  {
+    "name": "create_file",
+    "description": "Create a new file at a specific path or on the desktop with optional content. Defaults to Desktop.",
+    "trigger": ["create file", "new file", "make file"],
+    "inputs": ["file_name", "path", "content"],
+    "execution": "system_command"
+  },
+  {
+    "name": "autonomous_task",
+    "description": "For complex multi-step tasks that require visual screen control. The autonomous agent can SEE the screen via screenshots and control mouse/keyboard to accomplish tasks like navigating apps, filling forms, interacting with complex UIs, or any task requiring multiple coordinated steps across the OS.",
+    "trigger": ["do this", "navigate to", "complex task", "multi-step", "interact with"],
+    "inputs": ["task"],
+    "example": "open spotify and play lofi playlist → {\"skill\":\"autonomous_task\",\"parameters\":{\"task\":\"Open Spotify, search for lofi hip hop, and play the first playlist\"},\"action\":\"execute\"}",
+    "execution": "vision_agent"
+  },
+  {
+    "name": "focus_mode",
+    "description": "Enable focus or Do Not Disturb mode.",
+    "trigger": ["focus mode", "do not disturb", "dnd"],
+    "inputs": ["duration"],
+    "execution": "system_command"
+  },
+  {
+    "name": "run_code",
+    "description": "Run advanced Python code or terminal commands.",
+    "trigger": ["run script", "execute code", "terminal command", "run python"],
+    "inputs": ["query"],
+    "execution": "open_interpreter"
+  }
+]

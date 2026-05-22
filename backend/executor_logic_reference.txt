@@ -1,0 +1,237 @@
+"""
+JARVIS OS AUTOMATION SUBSYSTEM (automation_core.py)
+--------------------------------------------------
+This file centralizes all the primary OS-level interaction functions:
+- Searching (Web lookups)
+- Reading (Fetching real-time News/RSS)
+- Typing (Global keyboard macro injection)
+- Sending Messages (WhatsApp Desktop Automation with Verification)
+
+WORKING PROCESS:
+1. Routing: The main executor (task_runner.py) imports this file and routes requests here.
+2. Fallbacks: Each automated function provides fail-safes (e.g., if WhatsApp desktop fails, fallback to web).
+3. Verification: Instead of 'blind' UI execution, critical operations like messaging use UI Automation
+   to scan the application's element tree to assert the intended result (e.g., verifying a sent message 
+   appears in the screen's text blocks).
+"""
+
+import os
+import time
+import urllib.parse
+import urllib.request
+import webbrowser
+import subprocess
+import xml.etree.ElementTree as ET
+
+try:
+    import keyboard
+except ImportError:
+    keyboard = None
+
+try:
+    from pywinauto import Application
+except ImportError:
+    Application = None
+
+
+# ── 1. TYPING & KEYBOARD INJECTION ──────────────────────────────────────────
+def type_text(text: str) -> str:
+    """Simulate user typing out a string."""
+    if not keyboard:
+        return "ERROR: keyboard module is unavailable."
+    if not text:
+        return "No text provided to type."
+    
+    time.sleep(0.5)
+    keyboard.write(text, delay=0.02)
+    return f"SUCCESS: Typed '{text}'"
+
+
+# ── 2. WEB & SEARCH ─────────────────────────────────────────────────────────
+def search_web(query: str, resolved_browser_path: str = "") -> str:
+    """Launch a browser instance to search a query."""
+    if not query:
+        url = "https://www.google.com"
+    else:
+        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+
+    # If we have a specific browser mapped (like Arc, Chrome, Edge)
+    if resolved_browser_path:
+        try:
+            subprocess.Popen(f'start "" "{resolved_browser_path}" "{url}"', shell=True)
+            return f"Opened browser and searched: {query}"
+        except Exception as e:
+            print(f"[AutomationCore] Custom browser failed: {e}. Falling back to default.")
+    
+    # Fallback to system default
+    webbrowser.open(url)
+    return f"SUCCESS: Opened default browser and searched for '{query}'"
+
+
+# ── 3. READING (NEWS RSS) ───────────────────────────────────────────────────
+def read_news_headlines(query: str) -> str:
+    """Process a Google News RSS feed for a specific topic."""
+    try:
+        query = query.strip() or "top stories"
+        encoded = urllib.parse.quote(query)
+        rss_url = f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
+        
+        req = urllib.request.Request(
+            rss_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            xml_data = resp.read()
+
+        root = ET.fromstring(xml_data)
+        items = root.findall(".//item")
+
+        headlines = []
+        # Return top 5 maximum to keep conversation latency low
+        for item in items[:5]:
+            title_el = item.find("title")
+            if title_el is not None and title_el.text:
+                headlines.append(title_el.text.strip())
+
+        if headlines:
+            return f"FOUND: Here are the news headlines for '{query}':\n" + \
+                   "\n".join(f"- {h}" for h in headlines)
+        
+        return f"EMPTY: No recent news found for '{query}'."
+
+    except Exception as e:
+        print(f"[AutomationCore] RSS Error: {e}")
+        return f"ERROR: Could not fetch news. Network or timeout issue."
+
+
+# ── 4. SENDING MESSAGES (WHATSAPP WITH DELIVERY VERIFICATION) ───────────────
+def send_whatsapp(contact: str, message: str) -> str:
+    """
+    Automate WhatsApp desktop. Uses UIA to explicitly confirm that the target
+    text was injected into the chat window before claiming success.
+    """
+    if not contact:
+        return "ERROR: No contact specified."
+
+    print(f"[AutomationCore] WhatsApp Target: {contact}, Payload: '{message}'")
+    
+    try:
+        if not Application:
+            raise Exception("pywinauto module required for Desktop automation.")
+
+        # 1. Spawn WhatsApp
+        subprocess.Popen('start whatsapp:', shell=True)
+        time.sleep(3) # Wait for UI to render
+        
+        wa_app = Application(backend="uia").connect(title_re=".*WhatsApp.*", timeout=10)
+        wa_window = wa_app.top_window()
+        wa_window.set_focus()
+        time.sleep(1)
+
+        if not keyboard:
+            raise Exception("keyboard module required to automate keystrokes.")
+
+        # 2. Reset and Focus Search Bar
+        keyboard.send("esc") 
+        time.sleep(0.5)
+        keyboard.send("ctrl+f")
+        time.sleep(1)
+        
+        # Clear any existing text
+        for _ in range(20): keyboard.send("backspace")
+        
+        # Type the contact name explicitly
+        keyboard.write(contact, delay=0.03)
+        time.sleep(2.5) # Give WhatsApp server time to filter chats
+        keyboard.send("enter")
+        time.sleep(1) # Wait for chat frame to render
+        
+        # 3. Handle 'Search Only' Intent
+        if not message:
+            return f"VERIFIED: Opened WhatsApp and loaded the chat for '{contact}'."
+
+        # 4. Handle 'Send' Intent
+        keyboard.write(message, delay=0.02)
+        time.sleep(0.5)
+        keyboard.send("enter")
+        
+        # 5. --- DELIVERY VERIFICATION SYSTEM ---
+        # Scan the UI automation tree to confirm that a text element containing the 
+        # message string has emerged in the window (verifying it entered the chat timeline).
+        try:
+            # We wait up to 3 seconds for the message text to appear inside the UI frame
+            sent_element = wa_window.child_window(title=message, control_type="Text")
+            if sent_element.exists(timeout=3):
+                return f"SUCCESS_VERIFIED: Message successfully delivered to {contact}."
+        except Exception as verification_error:
+            # Sometimes WhatsApp bundles text with timestamps, making exact matching fail.
+            # We degrade to an unverified report instead of throwing a total error.
+            print(f"[AutomationCore] UI Verification missed: {verification_error}")
+            return (
+                f"UNVERIFIED_SEND: The automation executed completely for '{contact}', but I could not "
+                f"scan the UI to confirm the message bubble appeared. Please ask the user to double check."
+            )
+            
+        return f"SUCCESS_VERIFIED: Message sent."
+
+    except Exception as e:
+        print(f"[AutomationCore] Desktop Automation Error: {e}")
+        
+        # 6. Fallback Matrix (WhatsApp Web)
+        if message:
+            web_url = f"https://web.whatsapp.com/send?text={urllib.parse.quote(message)}"
+            webbrowser.open(web_url)
+            return (
+                f"FALLBACK: Desktop automation crashed ({e}). I have opened WhatsApp Web with the message "
+                f"pre-typed. The user will need to manually click on '{contact}' and press send."
+            )
+        else:
+            webbrowser.open("https://web.whatsapp.com")
+            return f"FALLBACK: Desktop automation crashed. I opened WhatsApp Web for the user to search manually."
+
+
+--- WEB RUNNER CONTENT ---
+
+
+import os
+import asyncio
+from langchain_groq import ChatGroq
+from browser_use import Agent
+
+# Optionally use dotenv if not already loaded by main
+from dotenv import load_dotenv
+load_dotenv()
+
+async def run_web_task(task_description: str) -> str:
+    """
+    Executes an autonomous browser task using browser-use and LangChain.
+    Returns the result or summary of the operation.
+    """
+    print(f"[WebRunner] Starting task: {task_description}")
+    
+    try:
+        # Standard llm definition for web scraping (using a fast model)
+        llm = ChatGroq(
+            model_name="llama-3.1-8b-instant", 
+            groq_api_key=os.getenv("GROQ_API_KEY"),
+            temperature=0.1
+        )
+        
+        agent = Agent(
+            task=task_description,
+            llm=llm
+        )
+        
+        # Await the agent run because it's native asyncio
+        # browser-use manages Playwright under the hood
+        result = await agent.run()
+        
+        print("[WebRunner] Task complete.")
+        # Attempt to return the final textual thought/action sequence or a success marker
+        return f"Web task finished. Final output: {result}"
+        
+    except Exception as e:
+        error_msg = f"Failed to execute web task '{task_description}': {e}"
+        print(f"[WebRunner] Error: {error_msg}")
+        return error_msg

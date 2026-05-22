@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+backend/.env*
+backend/.env
 
 # vercel
 .vercel
@@ -39,3 +41,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python environment & caching
+.venv/
+backend/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+backend/sessions/
+jarvis_memory.json
+backend/jarvis_memory.json
