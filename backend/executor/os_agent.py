@@ -22,7 +22,8 @@ from PIL import Image
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 
-# Safety: disable fail-safe so mouse can reach corners
+# Safety: disable fail-safe so mouse can reach corners of the screen during automation.
+# WARNING: FAILSAFE=False removes the emergency corner escape. Use responsibly.
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.1
 

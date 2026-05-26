@@ -1,7 +1,9 @@
 import json
 import os
+import threading
 
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
+_lock = threading.Lock()
 
 DEFAULTS = {
     "muted": False,
@@ -18,7 +20,6 @@ def get_settings() -> dict:
     try:
         with open(SETTINGS_FILE, "r") as f:
             data = json.load(f)
-            # Always fill missing keys with defaults
             return {**DEFAULTS, **data}
     except Exception:
         return dict(DEFAULTS)
@@ -29,16 +30,18 @@ def save_settings(settings: dict):
         json.dump(merged, f, indent=2)
 
 def update_settings(patch: dict) -> dict:
-    current = get_settings()
-    current.update(patch)
-    save_settings(current)
-    return current
+    with _lock:
+        current = get_settings()
+        current.update(patch)
+        save_settings(current)
+        return current
 
 def is_muted() -> bool:
     return get_settings().get("muted", False)
 
 def toggle_mute() -> bool:
-    settings = get_settings()
-    settings["muted"] = not settings.get("muted", False)
-    save_settings(settings)
-    return settings["muted"]
+    with _lock:
+        settings = get_settings()
+        settings["muted"] = not settings.get("muted", False)
+        save_settings(settings)
+        return settings["muted"]

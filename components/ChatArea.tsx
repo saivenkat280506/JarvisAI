@@ -3,7 +3,6 @@
 import { useChatScroll } from "@/hooks/useChatScroll";
 import { Message, MessageContent, MessageAvatar } from "@/components/ui/message";
 import { Response } from "@/components/ui/response";
-import { ShimmeringText } from "@/components/ui/shimmering-text";
 import {
   TranscriptViewerAudio,
   TranscriptViewerContainer,

@@ -130,7 +130,7 @@ def open_whatsapp():
 def send_whatsapp_message(name, message):
     """Sends a WhatsApp message using pyautogui while recording the screen process."""
     # Setup record directory
-    project_dir = "C:\\Users\\saivenkat\\Desktop\\JARVIS"
+    project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     recordings_dir = os.path.join(project_dir, "whatsapp recordings")
     os.makedirs(recordings_dir, exist_ok=True)
     

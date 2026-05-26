@@ -146,6 +146,7 @@ async function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
       webSecurity: false // Disables mixed-content security filters to allow loading HTTP API from HTTPS site
     }
   });
@@ -153,12 +154,42 @@ async function createWindow() {
   // Load the beautiful, pre-compiled live cloud NextJS frontend URL
   mainWindow.loadURL(WEB_URL);
 
+  // Gracefully handle load failures
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    logToFile(`Failed to load ${WEB_URL}: ${errorDescription} (code: ${errorCode})`, true);
+    mainWindow.loadURL(`data:text/html,
+      <html>
+      <body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0;
+        font-family:sans-serif;background:#05070a;color:#f1f5f9;">
+        <div style="text-align:center;">
+          <h1>J.A.R.V.I.S.</h1>
+          <p style="color:#94a3b8;">Could not connect to the cloud frontend.</p>
+          <p style="font-size:12px;color:#64748b;">${errorDescription}</p>
+        </div>
+      </body>
+      </html>
+    `);
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+}
+
+// Prevent multiple instances
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
   });
 }
 

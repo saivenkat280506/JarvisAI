@@ -98,6 +98,7 @@
   backdrop-filter: blur(12px) saturate(180%);
   -webkit-backdrop-filter: blur(12px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.3);
+  will-change: backdrop-filter;
 }
 
 .dark .glass {
@@ -133,14 +134,24 @@
 }
 
 .orb-float {
+  will-change: transform;
   animation: float 6s ease-in-out infinite;
 }
 
 .wave-bar {
+  will-change: transform, opacity;
   animation: waveBar 1.2s ease-in-out infinite alternate;
 }
 
 /* Custom Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.05) transparent;
+}
+.dark * {
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -153,6 +164,12 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.1);
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* Noise texture */

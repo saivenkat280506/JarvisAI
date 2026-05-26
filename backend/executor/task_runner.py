@@ -20,8 +20,6 @@ import socket
 import re
 import json
 import asyncio
-from executor.skills.messaging import run_whatsapp_task
-from executor.skills.search import run_browser_search
 from executor.open_app import get_app_path
 
 # --- 3rd Party Dependencies ---
@@ -170,7 +168,10 @@ def read_news_headlines(query: str) -> str:
 
 async def send_whatsapp(contact: str, message: str) -> str:
     if not contact: return "ERROR: No contact specified."
-    return await run_whatsapp_task(contact, message)
+    from executor.automation import send_whatsapp_message
+    import asyncio
+    success, msg = await asyncio.to_thread(send_whatsapp_message, contact, message)
+    return msg
 
 def write_code(code: str, filename: str = "", language: str = "python") -> str:
     """Write code to a file and optionally open it in VS Code."""

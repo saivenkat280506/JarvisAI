@@ -51,6 +51,7 @@ else:
 load_dotenv(env_path)
 
 # ── Global Guards ────────────────────────────────────────────────────────────
+_state_lock = threading.Lock()
 _is_processing = False
 _processed_ids = set()
 _last_request_time = 0
@@ -219,23 +220,27 @@ async def process_command(command_text: str, request_id: str = None):
         print(f"[Backend] Command is the wake phrase itself. Ignoring.")
         return
 
-    is_duplicate = (command_text == _last_user_input and now - _last_request_time < 3)
-    if not command_text or is_duplicate:
-        return
-    if request_id and request_id in _processed_ids:
-        print(f"[Backend] Request {request_id} already seen. Ignoring.")
-        return
-    if now - _last_response_time < 2:
-        print("[Backend] Response guard active. Ignoring.")
-        return
+    with _state_lock:
+        is_duplicate = (command_text == _last_user_input and now - _last_request_time < 3)
+        if not command_text or is_duplicate:
+            return
+        if request_id and request_id in _processed_ids:
+            print(f"[Backend] Request {request_id} already seen. Ignoring.")
+            return
+        if now - _last_response_time < 2:
+            print("[Backend] Response guard active. Ignoring.")
+            return
+        if _is_processing:
+            print("[Backend] Already processing. Ignoring.")
+            return
 
-    try:
         _is_processing = True
         _last_request_time = now
         _last_user_input = command_text
         if request_id:
             _processed_ids.add(request_id)
 
+    try:
         response_id = str(uuid.uuid4())
         await set_state(SystemState.PROCESSING)
 
@@ -391,7 +396,8 @@ async def process_command(command_text: str, request_id: str = None):
         # Do NOT also broadcast_chat or we get a duplicate message.
         yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
     finally:
-        _is_processing = False
+        with _state_lock:
+            _is_processing = False
 
 async def process_command_with_timeout(command_text: str, request_id: str = None):
     """
@@ -465,16 +471,18 @@ async def voice_command_loop():
 
             # Prevent re-entry
             global _is_listening, _current_state
-            if _is_listening:
-                continue
-            if _current_state != SystemState.IDLE and _current_state != SystemState.SPEAKING:
-                print(f"[Core] Blocked: State={_current_state.name}")
-                continue
+            with _state_lock:
+                if _is_listening:
+                    continue
+                if _current_state != SystemState.IDLE and _current_state != SystemState.SPEAKING:
+                    print(f"[Core] Blocked: State={_current_state.name}")
+                    continue
 
             # ── 2. Notify frontend immediately so UI shows 'listening' state ──
             await manager.broadcast_json({"type": "wake_word_detected"})
             await set_state(SystemState.LISTENING)
-            _is_listening = True
+            with _state_lock:
+                _is_listening = True
 
             # (No wake greeting — jumping straight to listening per user request)
 
@@ -502,15 +510,16 @@ async def voice_command_loop():
             now = _time.time()
             global _is_processing, _last_request_time
 
-            if not command_text or _is_processing or (now - _last_request_time < 1.5):
-                if command_text:
-                    print(f"[Core] Debounce skip: {command_text!r}")
-                _is_listening = False
-                await manager.broadcast_json({"type": "transcript_clear"})
-                await manager.broadcast_state("idle")
-                continue
+            with _state_lock:
+                if not command_text or _is_processing or (now - _last_request_time < 1.5):
+                    if command_text:
+                        print(f"[Core] Debounce skip: {command_text!r}")
+                    _is_listening = False
+                    await manager.broadcast_json({"type": "transcript_clear"})
+                    await manager.broadcast_state("idle")
+                    continue
 
-            _last_request_time = now
+                _last_request_time = now
             print(f"[USER]: {command_text}")
 
             # Instantly set state to PROCESSING so UI updates immediately
@@ -525,7 +534,8 @@ async def voice_command_loop():
             async for _ in process_command_with_timeout(command_text):
                 pass
 
-            _is_listening = False
+            with _state_lock:
+                _is_listening = False
             
             # Since we just processed a voice command, loop back into voice mode automatically
             if not _stop_listen_trigger:
@@ -665,14 +675,16 @@ from fastapi import Form
 @app.post("/voice")
 async def voice_endpoint(audio: UploadFile = File(...), id: str = Form(None)):
     global _is_listening
-    if _is_listening:
-        print("[Voice] Already listening. Blocking upload.")
-        return StreamingResponse(
-            iter([f'data: {{"error": "Already listening", "done": true}}\n\n']),
-            media_type="text/event-stream",
-        )
+    with _state_lock:
+        if _is_listening:
+            print("[Voice] Already listening. Blocking upload.")
+            return StreamingResponse(
+                iter([f'data: {{"error": "Already listening", "done": true}}\n\n']),
+                media_type="text/event-stream",
+            )
 
-    _is_listening = True
+    with _state_lock:
+        _is_listening = True
     text = ""
     try:
         request_id = id
@@ -711,7 +723,8 @@ async def voice_endpoint(audio: UploadFile = File(...), id: str = Form(None)):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
     finally:
-        _is_listening = False
+        with _state_lock:
+            _is_listening = False
 
     if not text:
         import json
