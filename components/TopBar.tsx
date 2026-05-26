@@ -27,10 +27,10 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
 
   /* ── badge colours ── */
   const badgeCls = isChecking
-    ? "border-amber-200/70 bg-amber-50/60 text-amber-700"
+    ? "border-amber-200/70 dark:border-amber-800/50 bg-amber-50/60 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
     : isOnline
-    ? "border-emerald-200/70 bg-emerald-50/60 text-emerald-700"
-    : "border-red-200/70 bg-red-50/60 text-red-600";
+    ? "border-emerald-200/70 dark:border-emerald-800/50 bg-emerald-50/60 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300"
+    : "border-red-200/70 dark:border-red-800/50 bg-red-50/60 dark:bg-red-950/40 text-red-600 dark:text-red-300";
 
   const dotCls = isChecking
     ? "bg-amber-400 animate-pulse"
@@ -132,19 +132,19 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
             <div
               className={`flex items-center gap-2.5 px-5 py-4 border-b ${
                 isOnline
-                  ? "border-emerald-100 bg-emerald-50/40"
+                  ? "border-emerald-100 dark:border-emerald-900/50 bg-emerald-50/40 dark:bg-emerald-950/30"
                   : isChecking
-                  ? "border-amber-100 bg-amber-50/40"
-                  : "border-red-100 bg-red-50/40"
+                  ? "border-amber-100 dark:border-amber-900/50 bg-amber-50/40 dark:bg-amber-950/30"
+                  : "border-red-100 dark:border-red-900/50 bg-red-50/40 dark:bg-red-950/30"
               }`}
             >
               <StatusIcon
                 className={`w-4 h-4 ${
                   isChecking
-                    ? "animate-spin text-amber-500"
+                    ? "animate-spin text-amber-500 dark:text-amber-400"
                     : isOnline
-                    ? "text-emerald-600"
-                    : "text-red-500"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-red-500 dark:text-red-400"
                 }`}
               />
               <span className="text-xs font-bold tracking-widest uppercase text-zinc-900 dark:text-zinc-100">
@@ -158,13 +158,13 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
               <StatRow
                 label="Backend"
                 value={isChecking ? "—" : isOnline ? "ONLINE" : "OFFLINE"}
-                valueClass={
-                  isOnline
-                    ? "text-emerald-600"
-                    : isChecking
-                    ? "text-amber-500"
-                    : "text-red-500"
-                }
+                  valueClass={
+                    isOnline
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : isChecking
+                      ? "text-amber-500 dark:text-amber-400"
+                      : "text-red-500 dark:text-red-400"
+                  }
               />
               <StatRow label="Node" value="HYDERABAD_SC-1" />
               <StatRow
@@ -200,7 +200,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
 function StatRow({
   label,
   value,
-  valueClass = "text-zinc-800",
+  valueClass = "text-zinc-800 dark:text-zinc-200",
 }: {
   label: string;
   value: string;

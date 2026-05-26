@@ -22,7 +22,7 @@ export default function AgentStepTracker({ logs }: { logs: ActionLogEntry[] }) {
             ) : (
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
             )}
-            <span className={`font-mono text-xs ${log.status === 'success' ? 'text-white/40' : 'text-white/80'}`}>
+            <span className={`font-mono text-xs ${log.status === 'success' ? 'text-zinc-500 dark:text-white/40' : 'text-zinc-900 dark:text-white/80'}`}>
               {log.action}
             </span>
           </div>

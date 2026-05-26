@@ -7,6 +7,73 @@ Handles launching system applications using protocols, shell commands, and fallb
 import subprocess
 import webbrowser
 import os
+import shutil
+import json
+
+def get_app_path(app_name: str) -> str:
+    """Helper to resolve the path of an application using registry, start menu, or PATH."""
+    name_lower = app_name.lower().strip()
+    
+    # 1. Alias check
+    aliases = {
+        "calculator": "calc",
+        "paint": "mspaint",
+        "cmd": "cmd.exe",
+        "command prompt": "cmd.exe",
+        "terminal": "wt.exe",
+        "powershell": "powershell.exe",
+        "task manager": "taskmgr.exe",
+        "taskmanager": "taskmgr.exe",
+        "settings": "ms-settings:",
+        "control panel": "control",
+        "file explorer": "explorer.exe",
+        "explorer": "explorer.exe",
+        "notepad": "notepad.exe",
+        "notepads": "notepad.exe",
+    }
+    if name_lower in aliases:
+        name_lower = aliases[name_lower]
+        
+    if name_lower.endswith(":"):
+        return name_lower
+        
+    # 2. Registry search
+    registry = {}
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        registry_path = os.path.join(current_dir, "apps_registry.json")
+        if os.path.exists(registry_path):
+            with open(registry_path, "r", encoding="utf-8") as f:
+                registry = json.load(f)
+    except Exception:
+        pass
+        
+    if name_lower in registry:
+        return registry[name_lower]
+        
+    for key, val in registry.items():
+        if name_lower in key or key in name_lower:
+            return val
+            
+    # 3. Start Menu crawling
+    user_programs = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs")
+    common_programs = os.path.join(os.environ.get("ALLUSERSPROFILE", "C:\\ProgramData"), "Microsoft", "Windows", "Start Menu", "Programs")
+    search_dirs = [user_programs, common_programs]
+    for search_dir in search_dirs:
+        if os.path.exists(search_dir):
+            for root, dirs, files in os.walk(search_dir):
+                for file in files:
+                    if file.lower().endswith(".lnk"):
+                        link_name = os.path.splitext(file)[0].lower()
+                        if name_lower in link_name or link_name in name_lower:
+                            return os.path.join(root, file)
+                            
+    # 4. Path check using shutil.which
+    exe_path = shutil.which(name_lower)
+    if exe_path:
+        return exe_path
+        
+    return name_lower
 
 def open_app(app_name: str):
     """
@@ -18,7 +85,7 @@ def open_app(app_name: str):
     Returns:
         tuple: (success: bool, message: str)
     """
-    name_lower = app_name.lower()
+    name_lower = app_name.lower().strip()
     
     # 1. WhatsApp: Use local executable check and protocol fallback
     if "whatsapp" in name_lower:
@@ -42,7 +109,7 @@ def open_app(app_name: str):
                     subprocess.run("start whatsapp:", shell=True, check=True)
                     return True, "Successfully opened WhatsApp using protocol."
                 except Exception as e:
-                    return False, f"Error launching WhatsApp: {str(e)}"
+                    return False, f"failed to open {app_name}: {str(e)}"
 
     # 2. Browser (Arc with Fallback)
     if name_lower == "browser" or name_lower == "arc":
@@ -56,16 +123,38 @@ def open_app(app_name: str):
                 webbrowser.open("about:blank")
                 return True, "Arc browser not found. Opened default system browser as fallback."
             except Exception as e:
-                return False, f"Failed to open any browser: {str(e)}"
+                return False, f"failed to open {app_name}: {str(e)}"
 
-    # 3. Generic App Opening
+    # 3. Resolve app path
+    path = get_app_path(app_name)
+    if path.endswith(":"):
+        try:
+            os.startfile(path)
+            return True, f"Successfully opened {app_name}."
+        except Exception as e:
+            return False, f"failed to open {app_name}: {str(e)}"
+            
+    if os.path.exists(path):
+        try:
+            os.startfile(path)
+            return True, f"Successfully opened {app_name}."
+        except Exception as e:
+            try:
+                subprocess.Popen(f'start "" "{path}"', shell=True)
+                return True, f"Successfully opened {app_name}."
+            except Exception as ex:
+                return False, f"failed to open {app_name}: {str(ex)}"
+                
+    # Fallback to system path execution
     try:
-        # Attempt to launch using the system shell (similar to CMD 'start')
-        # This works if the app is registered in the system PATH
-        subprocess.Popen(f"start {app_name}", shell=True)
-        return True, f"Successfully attempted to launch {app_name} via shell."
-    except Exception as e:
-        return False, f"Could not find or launch {app_name}: {str(e)}"
+        exe_path = shutil.which(path)
+        if exe_path:
+            subprocess.Popen(exe_path, shell=False)
+            return True, f"Successfully opened {app_name}."
+    except Exception:
+        pass
+        
+    return False, f"failed to open {app_name}. Please make sure it is installed."
 
 if __name__ == "__main__":
     # Test cases
@@ -74,4 +163,4 @@ if __name__ == "__main__":
     for app in test_apps:
         print(f"Testing {app}...")
         success, msg = open_app(app)
-        print(f"Result: {'✅' if success else '❌'} {msg}\n")
+        print(f"Result: {success} {msg}\n")

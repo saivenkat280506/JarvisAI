@@ -106,7 +106,7 @@ export default function ChatArea({
                       "font-inter leading-relaxed text-[14px] shadow-sm",
                       msg.role === "assistant" 
                         ? "rounded-2xl rounded-bl-none bg-white/80 dark:bg-zinc-900/80 border border-white/40 dark:border-zinc-700/40" 
-                        : "rounded-2xl rounded-br-none bg-primary text-primary-foreground"
+                        : "rounded-2xl rounded-br-none bg-primary text-primary-foreground dark:bg-sky-950/40 dark:text-cyan-100 dark:border dark:border-cyan-500/30"
                     )}
                   >
                     {msg.isStreaming && msg.role === "assistant" ? (
@@ -134,7 +134,7 @@ export default function ChatArea({
               <Message from="user" className="justify-end opacity-70">
                 <MessageContent 
                   variant="contained" 
-                  className="rounded-2xl rounded-br-none bg-primary/40 text-primary-foreground font-inter text-[14px] italic border border-white/10 dark:border-white/5"
+                  className="rounded-2xl rounded-br-none bg-primary/40 text-primary-foreground dark:bg-sky-950/20 dark:text-cyan-200/70 font-inter text-[14px] italic border border-white/10 dark:border-cyan-500/20"
                 >
                   <div className="flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary-foreground animate-pulse" />

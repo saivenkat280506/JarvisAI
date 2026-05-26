@@ -546,6 +546,13 @@ async def lifespan(app: FastAPI):
     from executor.agent_loop import agent_loop
     asyncio.create_task(agent_loop.run())
     
+    # Start the Process Monitor background service
+    try:
+        from executor.process_monitor import start_process_monitor
+        start_process_monitor()
+    except Exception as e:
+        print(f"[Lifespan] Process Monitor failed to start: {e}")
+    
     # Start the Voice Command Loop
     asyncio.create_task(voice_command_loop())
 

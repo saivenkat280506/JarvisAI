@@ -9,11 +9,13 @@ from executor.automation import send_whatsapp_message, play_yt_music, search_goo
 from executor.task_manager import task_manager
 
 # Registry mapping LLM intents to functions
+from executor.automation import search_and_summarize_in_notepad
+
 TOOL_MAP = {
     "open_app": lambda params: open_app(params.get("app", "notepad")),
     "send_whatsapp": lambda params: send_whatsapp_message(params.get("name", ""), params.get("message", "")),
     "play_youtube_music": lambda params: play_yt_music(params.get("song", "")),
-    "search_browser": lambda params: search_google(params.get("query", "")),
+    "search_browser": lambda params: search_and_summarize_in_notepad(params.get("query", "latest news")),
     "read_headlines": lambda params: read_news_headlines(params.get("query", "")),
     "smart_search": lambda params: smart_search(params.get("query", "")),
     "chat": lambda params: (True, "Conversation handled."),

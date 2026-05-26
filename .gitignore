@@ -71,3 +71,5 @@ __pycache__/
 backend/sessions/
 jarvis_memory.json
 backend/jarvis_memory.json
+
+logs.txt

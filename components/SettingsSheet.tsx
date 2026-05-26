@@ -220,12 +220,12 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                   onClick={() => persist({ theme: "light" })}
                   className={`flex flex-col items-center gap-3 p-4 rounded-3xl transition-all ${
                     s.theme === "light"
-                      ? "bg-white border-2 border-primary shadow-md"
-                      : "bg-white/20 border-2 border-transparent hover:border-zinc-200 opacity-50"
+                      ? "bg-white dark:bg-zinc-800 border-2 border-primary dark:border-primary shadow-md"
+                      : "bg-white/20 dark:bg-zinc-800/20 border-2 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 opacity-50"
                   }`}
                 >
-                  <Sun className={`w-5 h-5 ${s.theme === "light" ? "text-primary" : "text-zinc-600"}`} />
-                  <span className={`text-xs font-bold font-inter ${s.theme === "light" ? "text-zinc-900" : "text-zinc-500"}`}>
+                  <Sun className={`w-5 h-5 ${s.theme === "light" ? "text-primary" : "text-zinc-600 dark:text-zinc-400"}`} />
+                  <span className={`text-xs font-bold font-inter ${s.theme === "light" ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400"}`}>
                     Light Pro
                   </span>
                 </button>
@@ -233,12 +233,12 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                   onClick={() => persist({ theme: "dark" })}
                   className={`flex flex-col items-center gap-3 p-4 rounded-3xl transition-all ${
                     s.theme === "dark"
-                      ? "bg-white border-2 border-primary shadow-md"
-                      : "bg-white/20 border-2 border-transparent hover:border-zinc-200 opacity-50"
+                      ? "bg-white dark:bg-zinc-800 border-2 border-primary dark:border-primary shadow-md"
+                      : "bg-white/20 dark:bg-zinc-800/20 border-2 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 opacity-50"
                   }`}
                 >
                   <Moon className={`w-5 h-5 ${s.theme === "dark" ? "text-primary" : "text-zinc-400"}`} />
-                  <span className={`text-xs font-bold font-inter ${s.theme === "dark" ? "text-zinc-900" : "text-zinc-400"}`}>
+                  <span className={`text-xs font-bold font-inter ${s.theme === "dark" ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-400 dark:text-zinc-500"}`}>
                     Dark Ops
                   </span>
                 </button>

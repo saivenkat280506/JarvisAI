@@ -22,7 +22,7 @@ import json
 import asyncio
 from executor.skills.messaging import run_whatsapp_task
 from executor.skills.search import run_browser_search
-from executor.app_discovery import get_app_path
+from executor.open_app import get_app_path
 
 # --- 3rd Party Dependencies ---
 try:
@@ -114,20 +114,9 @@ def press_key(key: str) -> str:
         return f"ERROR: Failed to press key: {e}"
 
 async def search_web(query: str, resolved_browser_path: str = "") -> str:
-    if not query: url = "https://www.google.com"
-    else: url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-    if resolved_browser_path:
-        try:
-            subprocess.Popen(f'start "" "{resolved_browser_path}" "{url}"', shell=True)
-            return f"Opened browser and searched: {query}"
-        except Exception as e:
-            print(f"[Automation] Custom browser failed: {e}")
-    try:
-        webbrowser.open(url)
-        return f"SUCCESS: Opened default browser and searched for '{query}'"
-    except Exception:
-        # Final fallback: Use Playwright to actually get the info and tell the user
-        return await run_browser_search(query)
+    from executor.automation import search_and_summarize_in_notepad
+    success, result = await asyncio.to_thread(search_and_summarize_in_notepad, query)
+    return result
 
 def play_youtube(query: str) -> str:
     """Search and play a YouTube video directly."""
