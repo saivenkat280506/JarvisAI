@@ -71,7 +71,7 @@ export default function ChatArea({
                 {msg.role === "assistant" && (
                   <MessageAvatar 
                     name="JV" 
-                    className="self-end mb-1 bg-white shadow-sm ring-white ring-offset-1 ring-1" 
+                    className="self-end mb-1 bg-white dark:bg-zinc-800 shadow-sm ring-white dark:ring-zinc-700 ring-offset-1 ring-1" 
                   />
                 )}
                 
@@ -82,13 +82,13 @@ export default function ChatArea({
                       audioSrc={msg.audioSrc}
                       audioType="audio/mpeg"
                       alignment={msg.alignment || { characters: [], characterStartTimesSeconds: [], characterEndTimesSeconds: [] }}
-                      className="bg-white/80 border border-white/40 shadow-sm rounded-2xl p-4 backdrop-blur-md"
+                      className="bg-white/80 dark:bg-zinc-900/80 border border-white/40 dark:border-zinc-700/40 shadow-sm rounded-2xl p-4 backdrop-blur-md"
                     >
                       <TranscriptViewerAudio className="sr-only" />
                       <div className="mb-4">
-                         <TranscriptViewerWords className="text-sm !leading-relaxed text-slate-700" />
+                         <TranscriptViewerWords className="text-sm !leading-relaxed text-slate-700 dark:text-slate-300" />
                       </div>
-                      <div className="flex items-center gap-4 border-t border-slate-100 pt-3">
+                      <div className="flex items-center gap-4 border-t border-slate-100 dark:border-slate-700 pt-3">
                         <TranscriptViewerPlayPauseButton className="h-8 w-8 rounded-full shrink-0">
                           {({ isPlaying }) => isPlaying ? <PauseIcon size={14} /> : <PlayIcon size={14} />}
                         </TranscriptViewerPlayPauseButton>
@@ -105,7 +105,7 @@ export default function ChatArea({
                     className={cn(
                       "font-inter leading-relaxed text-[14px] shadow-sm",
                       msg.role === "assistant" 
-                        ? "rounded-2xl rounded-bl-none bg-white/80 border border-white/40" 
+                        ? "rounded-2xl rounded-bl-none bg-white/80 dark:bg-zinc-900/80 border border-white/40 dark:border-zinc-700/40" 
                         : "rounded-2xl rounded-br-none bg-primary text-white"
                     )}
                   >
@@ -164,8 +164,8 @@ export default function ChatArea({
         )}
 
         <div className="relative group glass-input">
-          <div className="bg-white/60 border border-white/40 shadow-xl rounded-[24px] p-2 flex items-center transition-all duration-300 focus-within:bg-white focus-within:shadow-2xl focus-within:border-primary/20 backdrop-blur-md">
-            <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 h-10 w-10">
+          <div className="bg-white/60 dark:bg-zinc-900/60 border border-white/40 dark:border-zinc-700/40 shadow-xl rounded-[24px] p-2 flex items-center transition-all duration-300 focus-within:bg-white dark:focus-within:bg-zinc-900 focus-within:shadow-2xl focus-within:border-primary/20 backdrop-blur-md">
+            <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 dark:hover:bg-zinc-800 h-10 w-10">
               <FileUp className="w-5 h-5" />
             </Button>
             
@@ -179,7 +179,7 @@ export default function ChatArea({
             />
 
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 h-10 w-10" onClick={toggleMic}>
+              <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 dark:hover:bg-zinc-800 h-10 w-10" onClick={toggleMic}>
                 <Mic className="w-5 h-5" />
               </Button>
               <Button 

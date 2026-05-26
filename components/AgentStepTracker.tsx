@@ -7,7 +7,7 @@ export default function AgentStepTracker({ logs }: { logs: ActionLogEntry[] }) {
   if (agentLogs.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-2 p-4 pt-1 border-b border-white/5 bg-black/10">
+    <div className="flex flex-col gap-2 p-4 pt-1 border-b border-white/5 dark:border-white/10 bg-black/10 dark:bg-black/30">
       <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400 mb-1">
         <Terminal className="w-4 h-4 animate-pulse" />
         AUTONOMOUS EXECUTION

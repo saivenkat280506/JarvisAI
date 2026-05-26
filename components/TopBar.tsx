@@ -16,7 +16,7 @@ interface TopBarProps {
 
 /* Shared icon-button class — applied directly to native <button> elements */
 const iconBtn =
-  "inline-flex items-center justify-center rounded-xl h-9 w-9 bg-white/40 hover:bg-white/80 border border-white/60 shadow-sm transition-all active:scale-95 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+  "inline-flex items-center justify-center rounded-xl h-9 w-9 bg-white/40 dark:bg-zinc-800/40 hover:bg-white/80 dark:hover:bg-zinc-700/80 border border-white/60 dark:border-zinc-700/60 shadow-sm transition-all active:scale-95 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 
 export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) {
   const { status, latency } = useBackendStatus(5000);
@@ -43,14 +43,14 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
   const StatusIcon = isChecking ? Loader2 : isOnline ? Wifi : WifiOff;
 
   return (
-    <header className="h-14 flex-shrink-0 flex items-center px-6 relative z-50 glass rounded-3xl shadow-sm border-white/40">
+    <header className="h-14 flex-shrink-0 flex items-center px-6 relative z-50 glass rounded-3xl shadow-sm">
 
       {/* ── LEFT — System status + Refresh ── */}
       <div className="flex items-center gap-6">
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5">
             <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-            <span className="text-[10px] font-bold tracking-[0.15em] text-zinc-900 uppercase">
+            <span className="text-[10px] font-bold tracking-[0.15em] text-zinc-900 dark:text-zinc-100 uppercase">
               System Core
             </span>
           </div>
@@ -59,15 +59,15 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
           </span>
         </div>
 
-        <div className="h-6 w-px bg-zinc-200/50" />
+        <div className="h-6 w-px bg-zinc-200/50 dark:bg-zinc-700/50" />
 
         <div className="hidden md:flex items-center">
           {/* Plain <button> — no nesting issues */}
           <button
             onClick={onRefreshChat}
-            className="inline-flex items-center gap-2 rounded-lg h-7 px-3 bg-zinc-100 hover:bg-zinc-200 border border-zinc-200/60 shadow-sm transition-all active:scale-95 text-zinc-600 font-jetbrains text-[9px] uppercase tracking-wide cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            className="inline-flex items-center gap-2 rounded-lg h-7 px-3 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 border border-zinc-200/60 dark:border-zinc-700/60 shadow-sm transition-all active:scale-95 text-zinc-600 dark:text-zinc-400 font-jetbrains text-[9px] uppercase tracking-wide cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           >
-            <RotateCcw className="w-3 h-3 text-zinc-500" />
+            <RotateCcw className="w-3 h-3 text-zinc-500 dark:text-zinc-400" />
             Refresh Chat
           </button>
         </div>
@@ -75,7 +75,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
 
       {/* ── CENTER — Logo ── */}
       <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
-        <h1 className="text-lg font-bold tracking-[0.4em] text-zinc-900 filter drop-shadow-sm">
+        <h1 className="text-lg font-bold tracking-[0.4em] text-zinc-900 dark:text-zinc-100 filter drop-shadow-sm">
           <span className="opacity-40">J.A.R.V.I.S</span>
         </h1>
       </div>
@@ -100,7 +100,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
           title="Settings"
           aria-label="Open settings"
         >
-          <Settings2 className="w-4 h-4 text-zinc-700" />
+          <Settings2 className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />
         </button>
 
         {/* ── Network dropdown — Trigger IS the button, no wrapper ── */}
@@ -114,7 +114,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
             aria-label="Network status"
             title="Network status"
           >
-            <Globe className="w-4 h-4 text-zinc-700" />
+            <Globe className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />
             {/* tiny status dot */}
             <span
               className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full border border-white ${
@@ -126,7 +126,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
           <DropdownMenuContent
             align="end"
             sideOffset={8}
-            className="w-64 bg-white/80 backdrop-blur-3xl border border-white/50 rounded-3xl shadow-2xl p-0 overflow-hidden"
+            className="w-64 bg-white/80 dark:bg-zinc-900/90 backdrop-blur-3xl border border-white/50 dark:border-zinc-700/50 rounded-3xl shadow-2xl p-0 overflow-hidden"
           >
             {/* Header stripe */}
             <div
@@ -147,7 +147,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
                     : "text-red-500"
                 }`}
               />
-              <span className="text-xs font-bold tracking-widest uppercase text-zinc-900">
+              <span className="text-xs font-bold tracking-widest uppercase text-zinc-900 dark:text-zinc-100">
                 Network Status
               </span>
               <div className={`ml-auto w-2 h-2 rounded-full ${dotCls}`} />
@@ -207,8 +207,8 @@ function StatRow({
   valueClass?: string;
 }) {
   return (
-    <div className="flex items-center justify-between text-xs font-jetbrains">
-      <span className="text-zinc-500">{label}</span>
+    <div                 className="flex items-center justify-between text-xs font-jetbrains">
+      <span className="text-zinc-500 dark:text-zinc-400">{label}</span>
       <span className={`font-semibold ${valueClass}`}>{value}</span>
     </div>
   );

@@ -105,8 +105,8 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[400px] sm:w-[540px] glass border-l-white/20 p-0 overflow-hidden outline-none">
-        <div className="h-full flex flex-col bg-white/40 backdrop-blur-3xl p-8">
+      <SheetContent className="w-[400px] sm:w-[540px] glass border-l-white/20 dark:border-l-zinc-700/20 p-0 overflow-hidden outline-none">
+        <div className="h-full flex flex-col bg-white/40 dark:bg-zinc-900/80 backdrop-blur-3xl p-8">
           {/* Header */}
           <SheetHeader className="mb-8 items-start">
             <div className="p-3 rounded-2xl bg-primary text-white mb-4 shadow-lg shadow-primary/20">
@@ -123,7 +123,7 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                 </span>
               )}
             </div>
-            <SheetDescription className="text-zinc-500 font-inter">
+            <SheetDescription className="text-zinc-500 dark:text-zinc-400 font-inter">
               Configure J.A.R.V.I.S parameters and interface preferences.
             </SheetDescription>
           </SheetHeader>
@@ -134,12 +134,12 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
             <section className="space-y-4">
               <div className="flex items-center gap-2 mb-2">
                 <Bot className="w-4 h-4 text-primary" />
-                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900">Neural Link</h3>
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900 dark:text-zinc-100">Neural Link</h3>
               </div>
-              <div className="grid gap-6 p-5 rounded-3xl bg-white/40 border border-white/60 shadow-sm">
+              <div className="grid gap-6 p-5 rounded-3xl bg-white/40 dark:bg-zinc-800/40 border border-white/60 dark:border-zinc-700/60 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <p className="text-sm font-medium">Auto-Wake Detection</p>
+                    <p className="text-sm font-medium dark:text-zinc-200">Auto-Wake Detection</p>
                     <p className="text-xs text-muted-foreground">Wake Jarvis with "Hey Jarvis"</p>
                   </div>
                   <Switch
@@ -147,10 +147,10 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                     onCheckedChange={(v) => persist({ autoWake: v })}
                   />
                 </div>
-                <Separator className="bg-zinc-200/40" />
+                <Separator className="bg-zinc-200/40 dark:bg-zinc-700/40" />
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <p className="text-sm font-medium">Real-time Feedback</p>
+                    <p className="text-sm font-medium dark:text-zinc-200">Real-time Feedback</p>
                     <p className="text-xs text-muted-foreground">Show transcripts while speaking</p>
                   </div>
                   <Switch
@@ -158,10 +158,10 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                     onCheckedChange={(v) => persist({ realTimeFeedback: v })}
                   />
                 </div>
-                <Separator className="bg-zinc-200/40" />
+                <Separator className="bg-zinc-200/40 dark:bg-zinc-700/40" />
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <p className="text-sm font-medium">Mute Audio Output</p>
+                    <p className="text-sm font-medium dark:text-zinc-200">Mute Audio Output</p>
                     <p className="text-xs text-muted-foreground">Silence Jarvis voice responses</p>
                   </div>
                   <Switch
@@ -176,12 +176,12 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
             <section className="space-y-4">
               <div className="flex items-center gap-2 mb-2">
                 <Volume2 className="w-4 h-4 text-primary" />
-                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900">Aural Core</h3>
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900 dark:text-zinc-100">Aural Core</h3>
               </div>
-              <div className="space-y-8 p-5 rounded-3xl bg-white/40 border border-white/60 shadow-sm">
+              <div className="space-y-8 p-5 rounded-3xl bg-white/40 dark:bg-zinc-800/40 border border-white/60 dark:border-zinc-700/60 shadow-sm">
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
-                    <p className="text-sm font-medium">Response Volume</p>
+                    <p className="text-sm font-medium dark:text-zinc-200">Response Volume</p>
                     <span className="text-xs font-jetbrains text-zinc-400">{s.volume}%</span>
                   </div>
                   <Slider
@@ -195,7 +195,7 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                 </div>
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
-                    <p className="text-sm font-medium">Agent Confidence Threshold</p>
+                    <p className="text-sm font-medium dark:text-zinc-200">Agent Confidence Threshold</p>
                     <span className="text-xs font-jetbrains text-zinc-400">{(s.confidence / 100).toFixed(2)}</span>
                   </div>
                   <Slider
@@ -213,7 +213,7 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
             <section className="space-y-4">
               <div className="flex items-center gap-2 mb-2">
                 <Layout className="w-4 h-4 text-primary" />
-                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900">Interface</h3>
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900 dark:text-zinc-100">Interface</h3>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <button
@@ -249,12 +249,12 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
             <section className="space-y-4 pb-10">
               <div className="flex items-center gap-2 mb-2">
                 <Shield className="w-4 h-4 text-emerald-500" />
-                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900">Security</h3>
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900 dark:text-zinc-100">Security</h3>
               </div>
-              <div className="p-5 rounded-3xl bg-emerald-50/50 border border-emerald-100 flex items-center justify-between">
+              <div className="p-5 rounded-3xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/50 flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <p className="text-sm font-medium text-emerald-900">End-to-End Encryption</p>
-                  <p className="text-xs text-emerald-600/70">Neural link is fully encrypted</p>
+                  <p className="text-sm font-medium text-emerald-900 dark:text-emerald-200">End-to-End Encryption</p>
+                  <p className="text-xs text-emerald-600/70 dark:text-emerald-400/70">Neural link is fully encrypted</p>
                 </div>
                 <div className="p-1 rounded-full bg-emerald-500 text-white">
                   <Shield className="w-4 h-4" />
@@ -263,7 +263,7 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
             </section>
           </div>
 
-          <div className="mt-auto pt-6 border-t border-zinc-200/40">
+          <div className="mt-auto pt-6 border-t border-zinc-200/40 dark:border-zinc-700/40">
             <div className="flex items-center justify-between text-[11px] text-zinc-400 font-jetbrains">
               <span>JARVIS_v2.4.0</span>
               <span>SYSTEM_READY</span>

@@ -39,6 +39,11 @@
                       radial-gradient(at 50% 0%, hsla(210,100%,96%,1) 0, transparent 50%), 
                       radial-gradient(at 100% 0%, hsla(210,100%,98%,1) 0, transparent 50%);
   }
+  .dark body {
+    background-image: radial-gradient(at 0% 0%, hsla(240,10%,8%,1) 0, transparent 50%),
+                      radial-gradient(at 50% 0%, hsla(240,8%,12%,1) 0, transparent 50%),
+                      radial-gradient(at 100% 0%, hsla(240,10%,8%,1) 0, transparent 50%);
+  }
 }
 
 :root {
@@ -95,8 +100,24 @@
 }
 
 .dark .glass {
-  background: rgba(9, 9, 11, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(9, 9, 11, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-input {
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 24px;
+}
+
+.dark .glass-input {
+  background: rgba(9, 9, 11, 0.5);
+}
+
+.dark .glass-card {
+  background: rgba(9, 9, 11, 0.6);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 @keyframes waveBar {

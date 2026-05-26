@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Orb, AgentState } from "@/components/ui/orb";
 import { Waveform } from "@/components/ui/waveform";
 import { Mic, MicOff, Settings2, ShieldCheck, Zap } from "lucide-react";
@@ -21,6 +22,16 @@ export default function LeftPanel({
   speechTranscript,
   onSettingsClick
 }: LeftPanelProps) {
+  const [isDark, setIsDark] = useState(false);
+
+  useEffect(() => {
+    const check = () => setIsDark(document.documentElement.classList.contains("dark"));
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
   // Dynamic waveform data based on state
   const waveformData = agentState !== "idle" 
     ? Array.from({ length: 40 }, () => {
@@ -38,7 +49,7 @@ export default function LeftPanel({
           <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           <span className="text-[11px] font-bold tracking-widest text-muted-foreground uppercase">System Active</span>
         </div>
-        <Button variant="ghost" size="icon" onClick={onSettingsClick} className="rounded-full hover:bg-white/50">
+        <Button variant="ghost" size="icon" onClick={onSettingsClick} className="rounded-full hover:bg-white/50 dark:hover:bg-zinc-800/50">
           <Settings2 className="w-4 h-4 text-muted-foreground" />
         </Button>
       </div>
@@ -48,13 +59,14 @@ export default function LeftPanel({
         <div className={cn(
           "relative w-[168px] h-[168px] flex items-center justify-center rounded-full transition-all duration-700",
           "bg-white shadow-[0_0_60px_rgba(255,255,255,0.9),inset_0_0_30px_rgba(0,0,0,0.02)]",
+          "dark:bg-zinc-900 dark:shadow-[0_0_60px_rgba(0,0,0,0.5),inset_0_0_30px_rgba(255,255,255,0.02)]",
           "orb-float",
-          agentState === "talking" && "ring-4 ring-blue-50 ring-offset-4"
+          agentState === "talking" && "ring-4 ring-blue-50 dark:ring-blue-900/50 ring-offset-4"
         )}>
           <Orb
             agentState={agentState}
             className="w-full h-full p-2"
-            colors={["#88A9D1", "#5C84B1"]}
+            colors={isDark ? ["#1a3a5c", "#2d5a8e"] : ["#88A9D1", "#5C84B1"]}
           />
         </div>
 
@@ -75,7 +87,7 @@ export default function LeftPanel({
             fadeEdges={true}
             height={40}
             className="w-full h-full opacity-60"
-            barColor="#5C84B1"
+            barColor={isDark ? "#3a6a9e" : "#5C84B1"}
           />
         </div>
       </div>
@@ -83,7 +95,7 @@ export default function LeftPanel({
       {/* FOOTER SECTION - Glass Control */}
       <div className="flex flex-col gap-4">
         {(speechTranscript || agentState === "thinking" || agentState === "transcribing") && (
-          <div className="p-3 bg-white/40 border border-white/60 rounded-2xl animate-in fade-in slide-in-from-bottom-2">
+          <div className="p-3 bg-white/40 dark:bg-zinc-800/40 border border-white/60 dark:border-zinc-700/60 rounded-2xl animate-in fade-in slide-in-from-bottom-2">
             <p className="text-[13px] text-foreground leading-snug line-clamp-2 italic font-inter opacity-80">
               {speechTranscript ? `"${speechTranscript.trim()}"` : (
                 <span className="flex items-center gap-2">
@@ -124,13 +136,13 @@ export default function LeftPanel({
         })()}
 
         <div className="grid grid-cols-2 gap-2 text-[10px] text-muted-foreground font-jetbrains pt-2">
-          <div className="flex items-center gap-1.5 p-2 rounded-xl bg-white/30 border border-white/40">
+          <div className="flex items-center gap-1.5 p-2 rounded-xl bg-white/30 dark:bg-zinc-800/30 border border-white/40 dark:border-zinc-700/40">
             <ShieldCheck className="w-3 h-3 text-emerald-500" />
-            SECURE
+            <span className="dark:text-zinc-300">SECURE</span>
           </div>
-          <div className="flex items-center gap-1.5 p-2 rounded-xl bg-white/30 border border-white/40">
+          <div className="flex items-center gap-1.5 p-2 rounded-xl bg-white/30 dark:bg-zinc-800/30 border border-white/40 dark:border-zinc-700/40">
             <Zap className="w-3 h-3 text-amber-500" />
-            v2.4.0
+            <span className="dark:text-zinc-300">v2.4.0</span>
           </div>
         </div>
       </div>
