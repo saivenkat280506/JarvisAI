@@ -125,8 +125,8 @@ export default function LeftPanel({
             <Button 
               onClick={toggleMic}
               className={cn(
-                "w-full h-14 rounded-2xl transition-all duration-500 gap-3 border-none shadow-md text-white font-medium",
-                agentState !== "idle" ? config.color : "bg-primary hover:bg-zinc-800"
+                "w-full h-14 rounded-2xl transition-all duration-500 gap-3 border-none shadow-md text-primary-foreground font-medium",
+                agentState !== "idle" ? config.color : "bg-primary hover:bg-zinc-800 dark:hover:bg-zinc-700"
               )}
             >
               <Icon className={cn("w-5 h-5", agentState === "listening" && "animate-pulse")} />

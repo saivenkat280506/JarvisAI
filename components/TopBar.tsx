@@ -117,7 +117,7 @@ export default function TopBar({ onSettingsClick, onRefreshChat }: TopBarProps) 
             <Globe className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />
             {/* tiny status dot */}
             <span
-              className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full border border-white ${
+              className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full border border-white dark:border-zinc-700 ${
                 isChecking ? "bg-amber-400" : isOnline ? "bg-emerald-500" : "bg-red-500"
               }`}
             />

@@ -109,7 +109,7 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
         <div className="h-full flex flex-col bg-white/40 dark:bg-zinc-900/80 backdrop-blur-3xl p-8">
           {/* Header */}
           <SheetHeader className="mb-8 items-start">
-            <div className="p-3 rounded-2xl bg-primary text-white mb-4 shadow-lg shadow-primary/20">
+            <div className="p-3 rounded-2xl bg-primary text-primary-foreground mb-4 shadow-lg shadow-primary/20">
               <Zap className="w-5 h-5" />
             </div>
             <div className="flex items-center gap-3 w-full">
@@ -256,7 +256,7 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                   <p className="text-sm font-medium text-emerald-900 dark:text-emerald-200">End-to-End Encryption</p>
                   <p className="text-xs text-emerald-600/70 dark:text-emerald-400/70">Neural link is fully encrypted</p>
                 </div>
-                <div className="p-1 rounded-full bg-emerald-500 text-white">
+                <div className="p-1 rounded-full bg-emerald-500 text-primary-foreground">
                   <Shield className="w-4 h-4" />
                 </div>
               </div>

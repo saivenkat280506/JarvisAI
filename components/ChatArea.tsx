@@ -106,7 +106,7 @@ export default function ChatArea({
                       "font-inter leading-relaxed text-[14px] shadow-sm",
                       msg.role === "assistant" 
                         ? "rounded-2xl rounded-bl-none bg-white/80 dark:bg-zinc-900/80 border border-white/40 dark:border-zinc-700/40" 
-                        : "rounded-2xl rounded-br-none bg-primary text-white"
+                        : "rounded-2xl rounded-br-none bg-primary text-primary-foreground"
                     )}
                   >
                     {msg.isStreaming && msg.role === "assistant" ? (
@@ -134,10 +134,10 @@ export default function ChatArea({
               <Message from="user" className="justify-end opacity-70">
                 <MessageContent 
                   variant="contained" 
-                  className="rounded-2xl rounded-br-none bg-primary/40 text-white font-inter text-[14px] italic border border-white/10"
+                  className="rounded-2xl rounded-br-none bg-primary/40 text-primary-foreground font-inter text-[14px] italic border border-white/10 dark:border-white/5"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary-foreground animate-pulse" />
                     {speechTranscript}
                   </div>
                 </MessageContent>
@@ -185,7 +185,7 @@ export default function ChatArea({
               <Button 
                 onClick={() => sendMessage(inputText)}
                 disabled={!inputText.trim()}
-                className="bg-primary text-white rounded-full h-10 w-10 p-0 shadow-lg hover:bg-zinc-800 disabled:opacity-30 disabled:hover:bg-primary transition-all active:scale-95"
+                className="bg-primary text-primary-foreground rounded-full h-10 w-10 p-0 shadow-lg hover:bg-zinc-800 dark:hover:bg-zinc-700 disabled:opacity-30 disabled:hover:bg-primary transition-all active:scale-95"
               >
                 <SendHorizontal className="w-5 h-5" />
               </Button>

@@ -39,11 +39,12 @@
                       radial-gradient(at 50% 0%, hsla(210,100%,96%,1) 0, transparent 50%), 
                       radial-gradient(at 100% 0%, hsla(210,100%,98%,1) 0, transparent 50%);
   }
-  .dark body {
-    background-image: radial-gradient(at 0% 0%, hsla(240,10%,8%,1) 0, transparent 50%),
-                      radial-gradient(at 50% 0%, hsla(240,8%,12%,1) 0, transparent 50%),
-                      radial-gradient(at 100% 0%, hsla(240,10%,8%,1) 0, transparent 50%);
-  }
+}
+
+.dark body {
+  background-image: radial-gradient(at 0% 0%, hsla(240,10%,8%,1) 0, transparent 50%),
+                    radial-gradient(at 50% 0%, hsla(240,8%,12%,1) 0, transparent 50%),
+                    radial-gradient(at 100% 0%, hsla(240,10%,8%,1) 0, transparent 50%);
 }
 
 :root {
