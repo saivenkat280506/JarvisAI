@@ -6,7 +6,11 @@ Ensures LLM output is valid and safe before execution.
 
 import json
 
-ALLOWED_INTENTS = ["open_app", "send_whatsapp", "play_youtube_music", "search_browser", "cancel_task", "chat"]
+ALLOWED_INTENTS = [
+    "open_app", "send_whatsapp", "play_youtube_music", "search_browser",
+    "cancel_task", "chat", "greeting", "capabilities", "news", "joke",
+    "qa", "intro", "focus_window", "web_agent", "smart_search", "read_headlines"
+]
 
 def validate_action(action_json: dict):
     """

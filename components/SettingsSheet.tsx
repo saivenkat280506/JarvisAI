@@ -60,10 +60,26 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
     setLoading(true);
     fetch(`${BACKEND}/settings`)
       .then((r) => r.json())
-      .then((data) => setSettings({ ...DEFAULTS, ...data }))
+      .then((data) => {
+        setSettings({ ...DEFAULTS, ...data });
+        if (data.theme === "dark") {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+      })
       .catch(() => {/* keep defaults on error */})
       .finally(() => setLoading(false));
   }, [open]);
+
+  /* ── Update DOM theme class when settings.theme changes ── */
+  useEffect(() => {
+    if (settings.theme === "dark") {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  }, [settings.theme]);
 
   /* ── Debounced save to backend ── */
   const persist = useCallback((patch: Partial<Settings>) => {
@@ -170,7 +186,8 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                   </div>
                   <Slider
                     value={[s.volume]}
-                    onValueChange={(e) => persist({ volume: Array.isArray(e) ? e[0] : (e as any).value?.[0] ?? s.volume })}
+                    onValueChange={(v) => persist({ volume: (v as number[])[0] })}
+                    onValueCommitted={(v) => persist({ volume: Array.isArray(v) ? v[0] : v })}
                     max={100}
                     step={1}
                     className="[&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary"
@@ -183,7 +200,8 @@ export default function SettingsSheet({ open, onOpenChange }: SettingsSheetProps
                   </div>
                   <Slider
                     value={[s.confidence]}
-                    onValueChange={(e) => persist({ confidence: Array.isArray(e) ? e[0] : (e as any).value?.[0] ?? s.confidence })}
+                    onValueChange={(v) => persist({ confidence: (v as number[])[0] })}
+                    onValueCommitted={(v) => persist({ confidence: Array.isArray(v) ? v[0] : v })}
                     max={100}
                     step={1}
                   />

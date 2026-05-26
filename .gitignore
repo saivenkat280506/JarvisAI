@@ -18,7 +18,7 @@
 /out/
 
 # production
-/build
+/build/
 
 # misc
 .DS_Store
@@ -34,6 +34,26 @@ yarn-error.log*
 .env*
 backend/.env*
 backend/.env
+
+# build artifacts
+/dist/
+/dist-desktop/
+
+# log files
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# app registry (local machine paths)
+backend/executor/apps_registry.json
+
+# desktop build artifacts
+jarvis_app.spec
+jarvis_icon.ico
+jarvis_icon.png
+backend/desktop/jarvis_icon.png
 
 # vercel
 .vercel

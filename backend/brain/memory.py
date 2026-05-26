@@ -7,7 +7,8 @@ Stores recent interactions to provide context.
 import json
 import os
 
-MEMORY_FILE = "jarvis_memory.json"
+_DIR = os.path.dirname(os.path.abspath(__file__))
+MEMORY_FILE = os.path.join(_DIR, "..", "..", "jarvis_memory.json")
 
 def _load_memory():
     if os.path.exists(MEMORY_FILE):

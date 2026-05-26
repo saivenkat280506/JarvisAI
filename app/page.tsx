@@ -1,6 +1,7 @@
 "use client";
 // Modern J.A.R.V.I.S UI Rebuild Trigger
 
+import { useEffect } from "react";
 import TopBar from "@/components/TopBar";
 import LeftPanel from "@/components/LeftPanel";
 import ChatArea from "@/components/ChatArea";
@@ -11,6 +12,20 @@ import { useJarvis } from "@/hooks/useJarvis";
 
 export default function JarvisWorkspace() {
   const jarvis = useJarvis();
+
+  // Load and apply initial theme settings on startup
+  useEffect(() => {
+    fetch("http://127.0.0.1:8000/settings")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.theme === "dark") {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <main className="relative flex h-screen w-screen bg-background overflow-hidden p-4 gap-4">
@@ -23,6 +38,7 @@ export default function JarvisWorkspace() {
         isListening={jarvis.isListening}
         toggleMic={jarvis.toggleMic}
         speechTranscript={jarvis.speechTranscript}
+        onSettingsClick={() => jarvis.setSettingsOpen(true)}
       />
 
       {/* MAIN WORKSPACE - Unified Chat & Actions */}
@@ -47,6 +63,7 @@ export default function JarvisWorkspace() {
               streamingText={jarvis.streamingText}
               speechTranscript={jarvis.speechTranscript}
               agentState={jarvis.agentState}
+              toggleMic={jarvis.toggleMic}
             />
           </div>
         </div>

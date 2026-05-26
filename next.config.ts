@@ -1,8 +1,9 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   turbopack: {
-    root: "C:/Users/saivenkat/Desktop/JARVIS",
+    root: path.resolve("."),
   },
 };
 

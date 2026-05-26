@@ -553,6 +553,11 @@ class JarvisWindow(QMainWindow):
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
 
+        # Set Window Icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
         # State
         self._jarvis_state = "idle"
         self._is_voice_active = False

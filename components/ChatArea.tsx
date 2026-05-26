@@ -34,6 +34,7 @@ export interface ChatAreaProps {
   streamingText?: string;
   speechTranscript?: string;
   agentState?: string;
+  toggleMic?: () => void;
 }
 
 export default function ChatArea({ 
@@ -43,7 +44,8 @@ export default function ChatArea({
   sendMessage,
   streamingText,
   speechTranscript,
-  agentState
+  agentState,
+  toggleMic
 }: ChatAreaProps) {
   const scrollRef = useChatScroll([messages, streamingText, speechTranscript]);
 
@@ -177,7 +179,7 @@ export default function ChatArea({
             />
 
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 h-10 w-10">
+              <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 h-10 w-10" onClick={toggleMic}>
                 <Mic className="w-5 h-5" />
               </Button>
               <Button 

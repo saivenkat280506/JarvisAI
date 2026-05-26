@@ -126,7 +126,7 @@ class TaskManager:
             return {"status": "running", "name": self.active_tasks[task_id][1]["name"]}
         return self.task_history.get(task_id)
 
-    async def cancel_task(self, task_id: str) -> bool:
+    def cancel_task(self, task_id: str) -> bool:
         """Cancels a running task."""
         if task_id in self.active_tasks:
             task, _ = self.active_tasks[task_id]
@@ -138,12 +138,12 @@ class TaskManager:
         """Returns a list of active task IDs for a given type."""
         return list(self.type_mapping.get(task_type, []))
 
-    async def cancel_task_by_type(self, task_type: str) -> int:
+    def cancel_task_by_type(self, task_type: str) -> int:
         """Cancels all active tasks of a specific type."""
         task_ids = self.get_tasks_by_type(task_type)
         count = 0
         for tid in task_ids:
-            if await self.cancel_task(tid):
+            if self.cancel_task(tid):
                 count += 1
         return count
 

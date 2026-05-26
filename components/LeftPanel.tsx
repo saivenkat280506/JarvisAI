@@ -11,13 +11,15 @@ interface LeftPanelProps {
   isListening: boolean;
   toggleMic: () => void;
   speechTranscript: string;
+  onSettingsClick: () => void;
 }
 
 export default function LeftPanel({ 
   agentState, 
   isListening, 
   toggleMic,
-  speechTranscript 
+  speechTranscript,
+  onSettingsClick
 }: LeftPanelProps) {
   // Dynamic waveform data based on state
   const waveformData = agentState !== "idle" 
@@ -36,7 +38,7 @@ export default function LeftPanel({
           <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           <span className="text-[11px] font-bold tracking-widest text-muted-foreground uppercase">System Active</span>
         </div>
-        <Button variant="ghost" size="icon" className="rounded-full hover:bg-white/50">
+        <Button variant="ghost" size="icon" onClick={onSettingsClick} className="rounded-full hover:bg-white/50">
           <Settings2 className="w-4 h-4 text-muted-foreground" />
         </Button>
       </div>

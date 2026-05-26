@@ -154,13 +154,16 @@ async def _fetch_news_summary() -> str:
             print(f"[News] Fetch error: {exc}")
 
     if not headlines:
-        # Fallback: lightweight scrape via GNews RSS (no key required)
+        # Fallback: lightweight scrape via GNews RSS with cache-busting and country-targeted top stories (no key required)
         try:
+            import time
+            cache_buster = int(time.time())
+            rss_url = f"https://news.google.com/rss/search?q=top+stories&hl=en-US&gl=US&ceid=US:en&t={cache_buster}"
             async with httpx.AsyncClient(timeout=8.0) as client:
-                r = await client.get("https://news.google.com/rss", follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
+                r = await client.get(rss_url, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
                 import xml.etree.ElementTree as ET
                 root = ET.fromstring(r.text)
-                headlines = [item.find('title').text for item in root.findall('.//item')][:6]
+                headlines = [item.find('title').text for item in root.findall('.//item') if item.find('title') is not None][:6]
         except Exception as exc:
             print(f"[News] RSS fallback error: {exc}")
 
@@ -185,6 +188,7 @@ async def _fetch_news_summary() -> str:
 
 async def _speak_in_background(text: str, is_smart: bool, response_id: str):
     try:
+        await set_state(SystemState.SPEAKING)
         await speak(text, is_smart=is_smart, response_id=response_id)
     finally:
         await set_state(SystemState.IDLE)
@@ -352,7 +356,6 @@ async def process_command(command_text: str, request_id: str = None):
         else:
             # ── Tool execution path ──────────────────────────────────────────
             success, result = await execute_tool(action_json)
-            await set_state(SystemState.SPEAKING)
 
             if success:
                 add_to_history(command_text)
@@ -365,7 +368,6 @@ async def process_command(command_text: str, request_id: str = None):
 
         # ── SINGLE SOURCE OF TRUTH: show first, then speak ──────────────────
         if final_response:
-            await set_state(SystemState.SPEAKING)
             # 1. Push text to chat UI immediately so user sees it
             await manager.broadcast_chat(final_response)
             # 2. Start TTS in background (runs while user is already reading the text)
@@ -546,6 +548,14 @@ async def lifespan(app: FastAPI):
     
     # Start the Voice Command Loop
     asyncio.create_task(voice_command_loop())
+
+    # Warm up local Pocket TTS model at startup
+    try:
+        from tts.pocket_tts import warm_up_tts
+        await asyncio.to_thread(warm_up_tts)
+    except Exception as e:
+        print(f"[Lifespan] Pocket TTS warm-up failed: {e}")
+
     yield
     print("[Server] Shutting down.")
 
