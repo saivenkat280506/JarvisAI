@@ -10,7 +10,10 @@ ALLOWED_INTENTS = [
     "open_app", "send_whatsapp", "play_local_music", "play_youtube_music",
     "play_youtube_search", "play_spotify", "music_control", "volume_control", "search_browser",
     "cancel_task", "chat", "greeting", "capabilities", "news", "joke",
-    "qa", "intro", "focus_window", "web_agent", "smart_search", "read_headlines"
+    "qa", "intro", "focus_window", "web_agent", "smart_search", "read_headlines",
+    # Puppeteer advanced browser automation
+    "spotify_login", "browser_action", "browser_scroll_test",
+    "browser_click", "browser_type", "browser_scroll", "browser_navigate",
 ]
 
 def validate_action(action_json: dict):

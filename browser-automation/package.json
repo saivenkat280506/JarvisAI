@@ -1,0 +1,17 @@
+{
+  "name": "jarvis-browser-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Puppeteer control plane for JARVIS advanced browser automation",
+  "type": "module",
+  "main": "src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test:youtube": "node src/cli.mjs youtube-play \"AC/DC Back in Black\"",
+    "test:scroll": "node src/cli.mjs scroll-test",
+    "test:spotify-login": "node src/cli.mjs spotify-login"
+  },
+  "dependencies": {
+    "puppeteer": "^24.15.0"
+  }
+}

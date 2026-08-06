@@ -255,6 +255,16 @@ def route_command(text: str):
     if any(k in text for k in ["focus", "come back", "return to app", "bring back"]):
         return "focus_window", {}
 
+    # 10a. Puppeteer browser automation shortcuts
+    if re.search(r"\b(log\s*in|login|sign\s*in)\b.*\bspotify\b|\bspotify\b.*\b(log\s*in|login|sign\s*in)\b", text):
+        return "spotify_login", {}
+    if re.search(r"scroll\s*(speed\s*)?test|test\s*scroll", text):
+        return "browser_scroll_test", {}
+    if re.search(r"\bnavigate to\s+(https?://\S+)", text):
+        return "browser_navigate", {"url": re.search(r"navigate to\s+(https?://\S+)", text).group(1)}
+    if re.search(r"\b(open|go to)\s+(https?://\S+)", text):
+        return "browser_navigate", {"url": re.search(r"(https?://\S+)", text).group(1)}
+
     # 10. Intent: web_agent — autonomous click/browse/automate tasks
     agent_triggers = [
         "automate", "do it for me", "go to website", "browse to",

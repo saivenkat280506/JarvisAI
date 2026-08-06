@@ -17,6 +17,8 @@ NO_SEARCH_FALLBACK_INTENTS = {
     "cancel_task", "music_control", "volume_control",
     "play_local_music", "play_youtube_music", "play_youtube_search", "play_spotify",
     "open_app", "send_whatsapp", "joke", "news", "greeting",
+    "spotify_login", "browser_action", "browser_scroll_test",
+    "browser_click", "browser_type", "browser_scroll", "browser_navigate",
 }
 
 

@@ -37,14 +37,21 @@ AVAILABLE INTENTS:
 - open_app: Opens a system application. Param: {"app": "app_name"}
 - send_whatsapp: Sends a message. Params: {"name": "contact_name", "message": "text"}
 - play_local_music: Plays default garage music locally (no browser). Use ONLY when user says "play music" with no song and no service. Param: {}
-- play_youtube_music: Plays a song on YouTube Music. Param: {"song": "song_name"}
-- play_youtube_search: Searches YouTube for a song. Param: {"song": "song_name"}
-- play_spotify: Searches Spotify for a song. Param: {"song": "song_name"}
+- play_youtube_music: Plays a song on YouTube Music via Puppeteer automation. Param: {"song": "song_name"}
+- play_youtube_search: Plays a song on YouTube via Puppeteer (click/search/play). Param: {"song": "song_name"}
+- play_spotify: Opens Spotify web, optionally logs in, searches and plays. Param: {"song": "song_name"}
+- spotify_login: Log into Spotify web (uses SPOTIFY_EMAIL/SPOTIFY_PASSWORD env if set). Param: {"email": "", "password": ""}
+- browser_action: Low-level Puppeteer control. Params: {"action": "navigate|click|type|scroll|youtube_play|scroll_test|...", ...}
+- browser_scroll_test: Measure page scroll speed. Param: {"url": "https://...", "pixels": 900, "times": 8}
+- browser_navigate: Open URL in automated browser. Param: {"url": "https://..."}
+- browser_click: Click selector or text. Params: {"selector": "..."} or {"text": "..."}
+- browser_type: Type into selector. Params: {"selector": "...", "text": "..."}
+- browser_scroll: Scroll page. Params: {"pixels": 800, "direction": "down", "times": 1}
 - music_control: Control local music playback. Params: {"action": "stop|pause|resume|restart|status|volume_set|volume_up|volume_down|mute|unmute", "level": 50, "amount": 10}
 - volume_control: Adjust Windows system volume 0-100. Params: {"action": "set|up|down|mute|unmute|get", "level": 50, "amount": 10}
 - read_headlines: FETCH & SUMMARIZE news. Use for any quest for current events or news. Param: {"query": "topic"}
 - smart_search: FETCH & SUMMARIZE general information from the web. Use this for "What is...", "Who is...", "Search for..." instead of opening a browser. Param: {"query": "search_term"}
-- web_agent: AUTONOMOUS AGENT. Use this when the user explicitly asks you to 'automate', 'build', 'operate', 'browse the web', 'control my PC', or do complex multi-step browser/OS actions. Param: {"task": "full descriptive task instruction"}
+- web_agent: AUTONOMOUS OS AGENT (screen+mouse). Use for desktop UI tasks. Prefer Puppeteer intents for real browser click/scroll/login. Param: {"task": "full descriptive task instruction"}
 - search_browser: ONLY use this as a LAST RESORT if programmatic fetching fails or if the user explicitly says "open the website".
 
 RESPONSE STYLE:
