@@ -73,3 +73,11 @@ jarvis_memory.json
 backend/jarvis_memory.json
 
 logs.txt
+# local session / agent clutter
+terminals/
+mcps/
+whatsapp recordings/
+backend/tts/voices/*.wav
+!backend/tts/voices/jarvis_voice_clean.wav
+browser-automation/user-data/
+browser-automation/node_modules/

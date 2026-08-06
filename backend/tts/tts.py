@@ -1,66 +1,86 @@
 """
-tts.py — JARVIS TTS Interface
-=============================
-Provides a working text-to-speech interface.
+tts.py — Edge TTS playback (fast cloud synthesis for longer replies)
 """
-import os
 import asyncio
-import pygame
+import os
 import tempfile
+
+import pygame
 from edge_tts import Communicate
 
-# Pre-initialize pygame mixer for immediate playback
+EDGE_VOICE = "en-US-GuyNeural"
+
+_stop_event = asyncio.Event()
+
 try:
     pygame.mixer.pre_init(44100, -16, 2, 512)
     pygame.mixer.init()
 except Exception as e:
     print(f"[TTS] Mixer Init Error: {e}")
 
+
+def stop_edge_speech():
+    _stop_event.set()
+    try:
+        if pygame.mixer.get_init():
+            pygame.mixer.music.stop()
+            pygame.mixer.music.unload()
+    except Exception:
+        pass
+
+
+def _pause_local_music():
+    try:
+        from executor.music_services import pause_local_music
+        pause_local_music()
+    except Exception:
+        pass
+
+
+def _restore_local_music():
+    try:
+        from executor import music_services
+        music_services._apply_music_volume()
+    except Exception:
+        pass
+
+
 async def speak(text: str):
-    """
-    Synthesizes text to speech using edge-tts and plays it immediately.
-    """
     from brain.settings import is_muted
+
     if is_muted():
-        print("[TTS] Muted. Skipping playback.")
+        return
+    if not text or len(text.strip()) < 2:
         return
 
-    if not text or len(text.strip()) == 0:
-        return
+    _stop_event.clear()
+    _pause_local_music()
 
-    # Use a temporary file for the audio output
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
         temp_mp3 = tmp_file.name
 
     try:
-        # Generate audio using edge-tts
-        communicate = Communicate(text, "en-US-GuyNeural")
-        await communicate.save(temp_mp3)
-        
-        # Play the resulting audio using pygame (synchronous)
+        await Communicate(text, EDGE_VOICE).save(temp_mp3)
+        if _stop_event.is_set():
+            return
+
         pygame.mixer.music.load(temp_mp3)
         pygame.mixer.music.play()
-        
-        # Wait for playback to finish without blocking the event loop
+
         while pygame.mixer.music.get_busy():
-            await asyncio.sleep(0.05)
-            
+            if _stop_event.is_set():
+                pygame.mixer.music.stop()
+                break
+            await asyncio.sleep(0.03)
+
         pygame.mixer.music.unload()
     except Exception as e:
-        print(f"[TTS] Synthesis Error: {e}")
+        print(f"[Edge TTS] Synthesis Error: {e}")
     finally:
-        # Cleanup temporary file
+        _restore_local_music()
         try:
             if os.path.exists(temp_mp3):
                 os.remove(temp_mp3)
         except Exception:
             pass
-
-
-if __name__ == "__main__":
-    async def test():
-        print("Testing Edge TTS...")
-        await speak("Systems online. I am ready for your command, sir.")
-        print("Playback complete.")
-    
-    asyncio.run(test())
+        _stop_event.clear()

@@ -22,11 +22,36 @@ RESPONSE_MAP = {
         "success": ["Message sent, sir.", "Done, sir.", "Delivered, sir.", "Transmission successful, sir."],
         "fail": ["Failed to message {name}, sir.", "Transmission failed, sir.", "Connectivity issues are preventing communication with {name}."]
     },
+    "play_local_music": {
+        "start": ["Starting garage music, sir.", "Playing your local track, sir.", "Right away, sir."],
+        "success": ["Garage music is playing, sir.", "Now playing, sir.", "Audio stream established, sir."],
+        "fail": ["Couldn't find the local track, sir.", "Playback failed, sir."],
+    },
     "play_youtube_music": {
-        "start": ["Playing {song}, sir.", "Queueing {song}, sir.", "Starting playback, sir.", "Accessing media nodes for {song}."],
-        "success": ["Now playing, sir.", "All set, sir.", "Playing now, sir.", "Audio stream established, sir."],
-        "fail": ["Could not find {song}, sir.", "Playback failed, sir.", "No relevant media found for {song} in the archives."],
+        "start": ["Playing {song} on YouTube Music, sir.", "Queueing {song} on YouTube Music, sir.", "Starting playback, sir."],
+        "success": ["Now playing on YouTube Music, sir.", "All set, sir.", "Playing now, sir."],
+        "fail": ["Could not find {song}, sir.", "Playback failed, sir."],
         "again": ["Playing it again, sir.", "Replaying {song}, sir.", "One more time, sir."]
+    },
+    "play_youtube_search": {
+        "start": ["Searching YouTube for {song}, sir.", "Looking up {song} on YouTube, sir."],
+        "success": ["YouTube search opened, sir.", "Ready to play, sir."],
+        "fail": ["Couldn't open YouTube, sir.", "Search failed, sir."],
+    },
+    "play_spotify": {
+        "start": ["Searching Spotify for {song}, sir.", "Looking up {song} on Spotify, sir."],
+        "success": ["Spotify search opened, sir.", "Ready to play, sir."],
+        "fail": ["Couldn't open Spotify, sir.", "Search failed, sir."],
+    },
+    "music_control": {
+        "start": ["Adjusting music, sir."],
+        "success": ["Done, sir."],
+        "fail": ["Music control failed, sir."],
+    },
+    "volume_control": {
+        "start": ["Adjusting volume, sir."],
+        "success": ["Volume updated, sir."],
+        "fail": ["Couldn't adjust volume, sir."],
     },
     "search_browser": {
         "start": ["Searching for {query}, sir.", "Scanning the web, sir.", "Looking it up, sir.", "Querying global knowledge nodes for {query}."],

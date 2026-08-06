@@ -13,6 +13,13 @@ from executor.task_manager import task_manager
 from executor.agent_loop import agent_loop
 from executor.error_handler import log_error
 
+NO_SEARCH_FALLBACK_INTENTS = {
+    "cancel_task", "music_control", "volume_control",
+    "play_local_music", "play_youtube_music", "play_youtube_search", "play_spotify",
+    "open_app", "send_whatsapp", "joke", "news", "greeting",
+}
+
+
 async def execute_tool(action_json: dict, background: bool = False):
     """
     Validates the JSON and executes the mapped tool.
@@ -56,10 +63,11 @@ async def execute_tool(action_json: dict, background: bool = False):
                     if f_success:
                         return True, "I couldn't send the message automatically, but I've opened WhatsApp for you."
                 
-                if intent != "search_browser":
+                if intent not in NO_SEARCH_FALLBACK_INTENTS:
                     print("[Executor] Tool failed. Falling back to browser search.")
                     from executor.automation import search_google
-                    s_success, s_msg = await asyncio.to_thread(search_google, params.get("query", "the request"))
+                    query = params.get("query") or params.get("song") or "the request"
+                    s_success, s_msg = await asyncio.to_thread(search_google, query)
                     if s_success:
                         return True, "Automatic tool failed, but I've searched the web for you instead."
                 

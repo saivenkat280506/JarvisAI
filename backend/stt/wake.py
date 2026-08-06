@@ -1,8 +1,10 @@
 """
-wake.py — Wake Word Detection System
-=====================================
-Listens for the keyword phrases and triggers STT.
-Supported phrases: "jarvis", "hey jarvis", "wake up jarvis", "wake jarvis"
+wake.py — Wake Word Detection System for JARVIS
+================================================
+Continuous background listening for wake phrases before entering
+the full STT command pipeline. Uses Faster-Whisper tiny.en (local CPU).
+
+Wake phrases: "jarvis", "hey jarvis", "wake up jarvis", "wake jarvis"
 """
 
 import numpy as np
@@ -12,14 +14,13 @@ import queue
 import time as time_module
 
 # Configuration
-MODEL_SIZE = "tiny.en"
+MODEL_SIZE = "base.en"
 SAMPLE_RATE = 16000
-CHUNK_DURATION = 2      # Seconds of audio per analysis window
+CHUNK_DURATION = 2  # Seconds of audio per analysis window
 COMPUTE_TYPE = "int8"
-# Phrases that trigger wake word detection
+
 WAKE_PHRASES = ["jarvis", "hey jarvis", "wake up jarvis", "wake jarvis"]
 
-# Global model — loaded once, reused
 _model: WhisperModel | None = None
 
 
@@ -32,20 +33,20 @@ def get_model() -> WhisperModel:
 
 def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
     """
-    Continuously listens for wake phrases. 
-    If stop_check() returns True, it breaks early (e.g., triggered by UI).
-    If barge_in_callback is provided, it's called when voice activity is detected.
+    Continuously listens for wake phrases.
+    If stop_check() returns True, breaks early (UI trigger).
+    If barge_in_callback is provided, called on voice activity during speech.
     """
     model = get_model()
     audio_queue: queue.Queue = queue.Queue(maxsize=30)
 
     def audio_callback(indata: np.ndarray, frames: int, cb_time, status):
         if audio_queue.full():
-            try: audio_queue.get_nowait()
-            except queue.Empty: pass
+            try:
+                audio_queue.get_nowait()
+            except queue.Empty:
+                pass
         audio_queue.put_nowait(indata.copy())
-
-
 
     try:
         with sd.InputStream(
@@ -61,10 +62,9 @@ def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
 
             while True:
                 if stop_check and stop_check():
-                    return True  # Triggered by UI!
+                    return True
 
-                # --- Fill buffer up to one CHUNK_DURATION of audio ---
-                # --- Fill buffer up to one CHUNK_DURATION of audio ---
+                # Fill buffer up to one CHUNK_DURATION of audio
                 while len(audio_buffer) < target_samples:
                     try:
                         chunk = audio_queue.get(timeout=0.2)
@@ -72,17 +72,22 @@ def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
                     except queue.Empty:
                         continue
 
-                # --- Transcribe ---
+                # Transcribe
                 audio_data = np.array(audio_buffer[:target_samples], dtype=np.float32)
                 try:
-                    segments, _ = model.transcribe(audio_data, beam_size=1, language="en")
+                    segments, _ = model.transcribe(
+                        audio_data,
+                        beam_size=3,
+                        language="en",
+                        initial_prompt="jarvis, hey jarvis, wake up jarvis",
+                    )
                     text = "".join(s.text for s in segments).lower().strip()
                 except Exception as e:
                     print(f"[Wake] Transcription error: {e}")
                     audio_buffer = []
                     continue
 
-                # --- Check for wake phrases ---
+                # Check for wake phrases
                 if text and any(phrase in text for phrase in WAKE_PHRASES):
                     print(f"[Wake] Wake phrase detected in: '{text}'")
                     return True

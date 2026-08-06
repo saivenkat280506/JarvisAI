@@ -5,7 +5,15 @@ import { useTexture } from "@react-three/drei"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
 
-export type AgentState = "idle" | "thinking" | "listening" | "talking" | "transcribing" | null
+export type AgentState =
+  | "idle"
+  | "idle_listening"
+  | "thinking"
+  | "listening"
+  | "talking"
+  | "transcribing"
+  | "offline"
+  | null
 
 type OrbProps = {
   colors?: [string, string]
@@ -187,9 +195,15 @@ function Scene({
       )
     } else {
       const t = u.uTime.value * 2
-      if (agentRef.current === null || agentRef.current === "idle") {
+      if (agentRef.current === "offline") {
+        targetIn = 0
+        targetOut = 0.08
+      } else if (agentRef.current === null || agentRef.current === "idle") {
         targetIn = 0
         targetOut = 0.3
+      } else if (agentRef.current === "idle_listening") {
+        targetIn = clamp01(0.25 + Math.sin(t * 2.4) * 0.15)
+        targetOut = 0.35
       } else if (agentRef.current === "listening") {
         targetIn = clamp01(0.55 + Math.sin(t * 3.2) * 0.35)
         targetOut = 0.45

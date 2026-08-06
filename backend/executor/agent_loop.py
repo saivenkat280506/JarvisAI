@@ -8,7 +8,7 @@ import asyncio
 import time
 from executor.task_manager import task_manager
 from brain.responses import get_response
-from tts.tts import speak
+
 
 class AgentLoop:
     def __init__(self):
@@ -22,11 +22,16 @@ class AgentLoop:
         
         while self.is_running:
             try:
+                from services.runtime_state import flags
+                if flags.shutdown_requested:
+                    break
                 await self._check_and_retry_tasks()
-                await asyncio.sleep(2) # Loop interval
+                await asyncio.sleep(2)
             except Exception as e:
                 print(f"[AgentLoop Error] {e}")
                 await asyncio.sleep(5)
+
+        print("[AgentLoop] Stopped.")
 
     async def _check_and_retry_tasks(self):
         """Scans history for failures and attempts smart retries."""
@@ -56,8 +61,8 @@ class AgentLoop:
             else:
                 # Final failure
                 print(f"[AgentLoop] Task {task_id} failed after max retries.")
-                # Notify user via TTS - Jarvis tone
-                speak("Task failed, sir.")
+                from tts.pocket_tts import speak
+                await asyncio.to_thread(speak, "Task failed, sir.")
 
     def add_to_retry_queue(self, coro, metadata):
         """Adds a failed task to the retry queue."""

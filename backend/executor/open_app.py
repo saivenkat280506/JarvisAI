@@ -14,10 +14,11 @@ def get_app_path(app_name: str) -> str:
     """Helper to resolve the path of an application using registry, start menu, or PATH."""
     name_lower = app_name.lower().strip()
     
-    # 1. Alias check
+    # 1. Alias check — prefer classic System32 tools over Store/WindowsApps stubs
     aliases = {
-        "calculator": "calc",
-        "paint": "mspaint",
+        "calculator": "calc.exe",
+        "calc": "calc.exe",
+        "paint": "mspaint.exe",
         "cmd": "cmd.exe",
         "command prompt": "cmd.exe",
         "terminal": "wt.exe",
@@ -36,6 +37,20 @@ def get_app_path(app_name: str) -> str:
         
     if name_lower.endswith(":"):
         return name_lower
+
+    # Prefer PATH / System32 for well-known system binaries (avoids broken WindowsApps paths)
+    system_bins = {
+        "notepad.exe", "calc.exe", "mspaint.exe", "cmd.exe", "powershell.exe",
+        "taskmgr.exe", "explorer.exe", "wt.exe", "control.exe",
+    }
+    if name_lower in system_bins or name_lower.rstrip(".exe") + ".exe" in system_bins:
+        which_name = name_lower if name_lower.endswith(".exe") else f"{name_lower}.exe"
+        exe_path = shutil.which(which_name) or shutil.which(name_lower)
+        if exe_path and "windowsapps" not in exe_path.lower():
+            return exe_path
+        system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", which_name)
+        if os.path.exists(system32):
+            return system32
         
     # 2. Registry search
     registry = {}
@@ -55,7 +70,7 @@ def get_app_path(app_name: str) -> str:
         if name_lower in key or key in name_lower:
             return val
             
-    # 3. Start Menu crawling
+    # 3. Start Menu crawling (skip WindowsApps packages that cannot be launched)
     user_programs = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs")
     common_programs = os.path.join(os.environ.get("ALLUSERSPROFILE", "C:\\ProgramData"), "Microsoft", "Windows", "Start Menu", "Programs")
     search_dirs = [user_programs, common_programs]
@@ -66,7 +81,9 @@ def get_app_path(app_name: str) -> str:
                     if file.lower().endswith(".lnk"):
                         link_name = os.path.splitext(file)[0].lower()
                         if name_lower in link_name or link_name in name_lower:
-                            return os.path.join(root, file)
+                            full = os.path.join(root, file)
+                            if "windowsapps" not in full.lower():
+                                return full
                             
     # 4. Path check using shutil.which
     exe_path = shutil.which(name_lower)

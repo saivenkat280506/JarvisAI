@@ -36,7 +36,12 @@ AVAILABLE INTENTS:
 - chat: General conversation, greetings, or when you are providing the FINAL summarized answer fetched from a tool.
 - open_app: Opens a system application. Param: {"app": "app_name"}
 - send_whatsapp: Sends a message. Params: {"name": "contact_name", "message": "text"}
-- play_youtube_music: Plays music on YT Music. Param: {"song": "song_name"}
+- play_local_music: Plays default garage music locally (no browser). Use ONLY when user says "play music" with no song and no service. Param: {}
+- play_youtube_music: Plays a song on YouTube Music. Param: {"song": "song_name"}
+- play_youtube_search: Searches YouTube for a song. Param: {"song": "song_name"}
+- play_spotify: Searches Spotify for a song. Param: {"song": "song_name"}
+- music_control: Control local music playback. Params: {"action": "stop|pause|resume|restart|status|volume_set|volume_up|volume_down|mute|unmute", "level": 50, "amount": 10}
+- volume_control: Adjust Windows system volume 0-100. Params: {"action": "set|up|down|mute|unmute|get", "level": 50, "amount": 10}
 - read_headlines: FETCH & SUMMARIZE news. Use for any quest for current events or news. Param: {"query": "topic"}
 - smart_search: FETCH & SUMMARIZE general information from the web. Use this for "What is...", "Who is...", "Search for..." instead of opening a browser. Param: {"query": "search_term"}
 - web_agent: AUTONOMOUS AGENT. Use this when the user explicitly asks you to 'automate', 'build', 'operate', 'browse the web', 'control my PC', or do complex multi-step browser/OS actions. Param: {"task": "full descriptive task instruction"}

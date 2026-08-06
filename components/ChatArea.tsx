@@ -33,6 +33,7 @@ export interface ChatAreaProps {
   streamingText?: string;
   speechTranscript?: string;
   agentState?: string;
+  isBackendOnline?: boolean;
   toggleMic?: () => void;
 }
 
@@ -44,12 +45,19 @@ export default function ChatArea({
   streamingText,
   speechTranscript,
   agentState,
+  isBackendOnline = true,
   toggleMic
 }: ChatAreaProps) {
   const scrollRef = useChatScroll([messages, streamingText, speechTranscript]);
+  const isOffline = agentState === "offline" || !isBackendOnline;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-transparent">
+      {isOffline && (
+        <div className="mx-6 mt-3 px-4 py-2 rounded-2xl border border-red-200/70 dark:border-red-900/50 bg-red-50/70 dark:bg-red-950/30 text-red-600 dark:text-red-300 text-[11px] font-jetbrains text-center">
+          Backend offline — Jarvis cannot listen, speak, or run tasks until the server is back.
+        </div>
+      )}
       {/* MESSAGES VIEWPORT */}
       <div 
         ref={scrollRef}
@@ -172,18 +180,31 @@ export default function ChatArea({
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendMessage(inputText)}
-              placeholder={agentState === "listening" ? "Say something..." : "Message Jarvis..."}
-              className="flex-1 bg-transparent px-4 py-2 text-[14px] focus:outline-none placeholder:text-muted-foreground/50 font-inter"
+              onKeyDown={(e) => e.key === "Enter" && !isOffline && sendMessage(inputText)}
+              disabled={isOffline}
+              placeholder={
+                isOffline
+                  ? "Backend offline..."
+                  : agentState === "listening"
+                  ? "Say something..."
+                  : "Message Jarvis..."
+              }
+              className="flex-1 bg-transparent px-4 py-2 text-[14px] focus:outline-none placeholder:text-muted-foreground/50 font-inter disabled:opacity-50"
             />
 
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" className="rounded-full text-muted-foreground hover:bg-zinc-100 dark:hover:bg-zinc-800 h-10 w-10" onClick={toggleMic}>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={isOffline}
+                className="rounded-full text-muted-foreground hover:bg-zinc-100 dark:hover:bg-zinc-800 h-10 w-10 disabled:opacity-40"
+                onClick={toggleMic}
+              >
                 <Mic className="w-5 h-5" />
               </Button>
               <Button 
                 onClick={() => sendMessage(inputText)}
-                disabled={!inputText.trim()}
+                disabled={isOffline || !inputText.trim()}
                 className="bg-primary text-primary-foreground rounded-full h-10 w-10 p-0 shadow-lg hover:bg-zinc-800 dark:hover:bg-zinc-700 disabled:opacity-30 disabled:hover:bg-primary transition-all active:scale-95"
               >
                 <SendHorizontal className="w-5 h-5" />

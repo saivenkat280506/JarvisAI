@@ -4,12 +4,34 @@ router.py — Fast Rule-based Intent Router
 Routes explicit commands directly to tool intents to avoid LLM latency.
 
 Intent catalogue:
-  chat, send_whatsapp, play_youtube_music, open_app,
+  chat, send_whatsapp, play_local_music, play_youtube_music,
+  play_youtube_search, play_spotify, open_app,
   search_browser, cancel_task,
   news, joke, intro, focus_window
 """
 
 import re
+
+_WAKE_PREFIXES = (
+    "hey jarvis", "hi jarvis", "hello jarvis",
+    "wake up jarvis", "wake jarvis", "jarvis",
+)
+_GREETING_RE = re.compile(
+    r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))"
+    r"(?:\s+jarvis)?$",
+    re.IGNORECASE,
+)
+
+
+def _strip_wake_prefix(text: str) -> str:
+    cleaned = text.lower().strip().rstrip(".?!, ")
+    for prefix in _WAKE_PREFIXES:
+        if cleaned == prefix:
+            return ""
+        if cleaned.startswith(prefix + " "):
+            return cleaned[len(prefix):].strip()
+    return cleaned
+
 
 def route_command(text: str):
     """
@@ -18,11 +40,15 @@ def route_command(text: str):
     Returns:
         tuple: (intent, parameters) or (None, None) if LLM is needed.
     """
-    text = text.lower().strip()
+    text = _strip_wake_prefix(text)
     text_clean = text.rstrip(".?!, ").strip()
 
-    # 0. Intent: chat / greeting — delegate time-aware greeting to main.py
+    # 0. Intent: greeting — hi, hello, hi jarvis, good morning, etc.
+    if not text_clean or text_clean == "jarvis":
+        return "greeting", {}
     if any(k == text_clean for k in ["hi", "hello", "hey", "jarvis", "wake up"]):
+        return "greeting", {}
+    if _GREETING_RE.match(text_clean):
         return "greeting", {}
 
     # Matches: "open whatsapp and search for vaasavi and send message hi iam jarvis"
@@ -52,14 +78,127 @@ def route_command(text: str):
             "message": msg_match.group(2).strip()
         }
 
-    # 2. Intent: play_youtube_music
-    # Matches: "play song on youtube", "youtube play lofi", "play back in black"
-    yt_match = re.search(r"play\s+(.+?)(?:\s+on youtube)?$|youtube\s+(?:play\s+)?(.+)", text)
-    if yt_match:
-        song = yt_match.group(1) or yt_match.group(2)
-        return "play_youtube_music", {"song": song.strip()}
+    # 1b. Music control (transport + music-specific volume — before system volume)
+    music_vol_set = re.search(
+        r"(?:set\s+)?music\s+volume\s+to\s+(\d{1,3})|^music\s+volume\s+(\d{1,3})$",
+        text_clean,
+    )
+    if music_vol_set:
+        level = int(music_vol_set.group(1) or music_vol_set.group(2))
+        return "music_control", {"action": "volume_set", "level": level}
 
-    # 3. Intent: open_app
+    music_vol_up = re.search(
+        r"(?:increase|raise|turn\s+up)\s+(?:the\s+)?music\s+volume(?:\s+by\s+(\d{1,3}))?"
+        r"|music\s+volume\s+up(?:\s+by\s+(\d{1,3}))?",
+        text,
+    )
+    if music_vol_up:
+        amount = int(music_vol_up.group(1) or music_vol_up.group(2) or 10)
+        return "music_control", {"action": "volume_up", "amount": amount}
+
+    music_vol_down = re.search(
+        r"(?:decrease|reduce|lower|turn\s+down)\s+(?:the\s+)?music\s+volume(?:\s+by\s+(\d{1,3}))?"
+        r"|music\s+volume\s+down(?:\s+by\s+(\d{1,3}))?",
+        text,
+    )
+    if music_vol_down:
+        amount = int(music_vol_down.group(1) or music_vol_down.group(2) or 10)
+        return "music_control", {"action": "volume_down", "amount": amount}
+
+    if text_clean in {"mute music", "mute the music"}:
+        return "music_control", {"action": "mute"}
+
+    if text_clean in {"unmute music", "unmute the music"}:
+        return "music_control", {"action": "unmute"}
+
+    if re.search(r"(?:is\s+music\s+playing|music\s+status|what(?:'s| is)\s+playing)", text):
+        return "music_control", {"action": "status"}
+
+    if text_clean in {"stop music", "stop the music", "stop playback", "stop song"}:
+        return "music_control", {"action": "stop"}
+
+    if text_clean in {"pause music", "pause the music", "pause song", "pause playback"}:
+        return "music_control", {"action": "pause"}
+
+    if text_clean in {"resume music", "resume the music", "continue music", "unpause music"}:
+        return "music_control", {"action": "resume"}
+
+    if text_clean in {"restart music", "replay music", "play again"}:
+        return "music_control", {"action": "restart"}
+
+    # 1c. System volume control (Windows master 0–100, not music)
+    if "music" not in text:
+        set_vol = re.search(
+            r"^set\s+(?:the\s+)?volume\s+(?:at|to)\s+(\d{1,3})$"
+            r"|^(?:set\s+)?volume\s+to\s+(\d{1,3})$",
+            text_clean,
+        )
+        if set_vol:
+            level = int(set_vol.group(1) or set_vol.group(2))
+            return "volume_control", {"action": "set", "level": level}
+
+        inc_vol = re.search(
+            r"(?:increase|raise|turn\s+up)\s+(?:the\s+)?volume(?:\s+by\s+(\d{1,3}))?"
+            r"|^volume\s+up(?:\s+by\s+(\d{1,3}))?$",
+            text,
+        )
+        if inc_vol:
+            amount = inc_vol.group(1) or inc_vol.group(2) or 10
+            return "volume_control", {"action": "up", "amount": int(amount)}
+
+        dec_vol = re.search(
+            r"(?:decrease|reduce|lower|turn\s+down)\s+(?:the\s+)?volume(?:\s+by\s+(\d{1,3}))?"
+            r"|^volume\s+down(?:\s+by\s+(\d{1,3}))?$",
+            text,
+        )
+        if dec_vol:
+            amount = dec_vol.group(1) or dec_vol.group(2) or 10
+            return "volume_control", {"action": "down", "amount": int(amount)}
+
+        if text_clean in {"mute", "mute volume", "mute audio"}:
+            return "volume_control", {"action": "mute"}
+
+        if text_clean in {"unmute", "unmute volume", "unmute audio"}:
+            return "volume_control", {"action": "unmute"}
+
+        if re.search(r"(?:what(?:'s| is)\s+(?:the\s+)?volume|current volume|how loud)", text):
+            return "volume_control", {"action": "get"}
+
+    # 2. Music playback (local / spotify / youtube music / youtube search)
+    local_music_cmds = {
+        "play music", "play the music", "play some music", "start music", "put on music",
+    }
+    if text_clean in local_music_cmds:
+        return "play_local_music", {}
+
+    spotify_match = re.search(
+        r"(?:play\s+(.+?)\s+on\s+spotify|spotify\s+(?:play\s+)?(.+)|play\s+(.+?)\s+(?:from|using)\s+spotify)",
+        text,
+    )
+    if spotify_match:
+        song = (spotify_match.group(1) or spotify_match.group(2) or spotify_match.group(3) or "").strip()
+        if song:
+            return "play_spotify", {"song": song}
+
+    ytm_match = re.search(
+        r"play\s+(.+?)\s+on\s+(?:youtube\s+music|yt\s+music)|(?:youtube\s+music|yt\s+music)\s+(?:play\s+)?(.+)",
+        text,
+    )
+    if ytm_match:
+        song = (ytm_match.group(1) or ytm_match.group(2) or "").strip()
+        if song:
+            return "play_youtube_music", {"song": song}
+
+    yt_search_match = re.search(
+        r"play\s+(.+?)\s+on\s+youtube|youtube\s+(?:play\s+)?(.+)|play\s+(.+?)\s+(?:from|using)\s+youtube",
+        text,
+    )
+    if yt_search_match:
+        song = (yt_search_match.group(1) or yt_search_match.group(2) or yt_search_match.group(3) or "").strip()
+        if song and song.lower() not in {"music", "some music"}:
+            return "play_youtube_search", {"song": song}
+
+    # 4. Intent: open_app
     # Matches: "open chrome", "open spotify"
     open_match = re.search(r"open\s+([a-zA-Z0-9\-\.\s]+)", text)
     if open_match:
@@ -68,17 +207,21 @@ def route_command(text: str):
         if len(app_name.split()) <= 3 and " and " not in app_name:
             return "open_app", {"app": app_name}
 
-    # 4. Intent: news / headlines (must be checked BEFORE search_browser)
+    # 4b. Intent: time
+    if re.search(r"what(?:'s| is)\s+(?:the\s+)?time\b", text):
+        return "time", {}
+
+    # 5. Intent: news / headlines (must be checked BEFORE search_browser)
     if any(k in text for k in ["news", "headlines", "latest news", "what's happening", "top stories", "news summary", "headlines summary", "read summary", "summary"]):
         return "news", {}
 
-    # 5. Intent: search_browser
+    # 6. Intent: search_browser
     # Matches: "search for newton's law", "google newton's law"
     search_match = re.search(r"(?:search\s+(?:for\s+)?|google\s+)(.+)", text)
     if search_match:
         return "search_browser", {"query": search_match.group(1).strip()}
 
-    # 6. Intent: cancel_task
+    # 7. Intent: cancel_task
     # Matches: "stop", "cancel", "stop music", "cancel playing"
     if any(k in text for k in ["stop", "cancel", "shut up", "be quiet"]):
         # Determine what to cancel
@@ -92,11 +235,11 @@ def route_command(text: str):
             # Cancel all
             return "cancel_task", {"task_type": "all"}
 
-    # 7. Intent: joke
+    # 8. Intent: joke
     if any(k in text for k in ["joke", "make me laugh", "say something funny", "tell me a joke"]):
         return "joke", {"style": "short, witty"}
 
-    # 8. Intent: qa (General Knowledge)
+    # 9. Intent: qa (General Knowledge)
     if re.search(r"^(what is|what are|who is|who are|how do|tell me about|explain|why is|why are|where is|when did|what's|who's)\b", text):
         return "qa", {"query": text}
 
@@ -132,10 +275,20 @@ def route_command(text: str):
 if __name__ == "__main__":
     test_cases = [
         "send message to Rahul hello",
+        "play music",
+        "stop music",
+        "reduce music volume by 3",
+        "set music volume to 50",
+        "music status",
+        "reduce volume by 3",
+        "set volume to 50",
+        "mute music",
         "play lofi on youtube",
+        "play despacito on youtube music",
+        "play back in black on spotify",
         "open chrome",
         "search for python",
-        "how are you?", # Should be None
+        "how are you?",  # Should be None
     ]
     for cmd in test_cases:
         intent, params = route_command(cmd)

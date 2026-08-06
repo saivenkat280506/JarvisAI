@@ -32,5 +32,8 @@ pytesseract
 pyperclip
 edge-tts
 pygame
+pycaw
 faster-whisper
 torch
+groq
+webrtcvad

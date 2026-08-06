@@ -36,6 +36,7 @@ export default function JarvisWorkspace() {
       <LeftPanel 
         agentState={jarvis.agentState} 
         isListening={jarvis.isListening}
+        isBackendOnline={jarvis.isBackendOnline}
         toggleMic={jarvis.toggleMic}
         speechTranscript={jarvis.speechTranscript}
         onSettingsClick={() => jarvis.setSettingsOpen(true)}
@@ -45,7 +46,9 @@ export default function JarvisWorkspace() {
       <div className="relative flex flex-col flex-1 gap-4 min-w-0">
         <TopBar 
           onSettingsClick={() => jarvis.setSettingsOpen(true)} 
-          onRefreshChat={jarvis.clearChat} 
+          onRefreshChat={jarvis.clearChat}
+          backendStatus={jarvis.backendStatus}
+          backendLatency={jarvis.backendLatency}
         />
         
         <div className="flex-1 flex gap-4 min-h-0">
@@ -63,6 +66,7 @@ export default function JarvisWorkspace() {
               streamingText={jarvis.streamingText}
               speechTranscript={jarvis.speechTranscript}
               agentState={jarvis.agentState}
+              isBackendOnline={jarvis.isBackendOnline}
               toggleMic={jarvis.toggleMic}
             />
           </div>

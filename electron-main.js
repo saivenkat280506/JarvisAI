@@ -8,7 +8,13 @@ const fs = require('fs');
 let mainWindow;
 let pythonProcess;
 const BACKEND_PORT = 8000;
-const WEB_URL = 'https://jarvis-blue-five.vercel.app';
+const WEB_URL = process.env.JARVIS_WEB_URL
+  || (app.isPackaged ? 'https://jarvis-blue-five.vercel.app' : 'http://localhost:3000');
+
+app.commandLine.appendSwitch(
+  'disable-features',
+  'BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights'
+);
 
 // Helper to write to log files safely to avoid EPIPE console crashes in packaged windows mode
 function logToFile(msg, isError = false) {
@@ -38,6 +44,73 @@ function isPortInUse(port) {
     });
     server.listen(port);
   });
+}
+
+function requestBackendShutdown() {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: BACKEND_PORT,
+        path: '/shutdown',
+        method: 'POST',
+        timeout: 4000,
+      },
+      (res) => {
+        res.resume();
+        logToFile(`Backend shutdown endpoint responded: ${res.statusCode}`);
+        resolve();
+      }
+    );
+
+    req.on('error', (err) => {
+      logToFile(`Backend shutdown request failed: ${err.message}`, true);
+      resolve();
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      logToFile('Backend shutdown request timed out.', true);
+      resolve();
+    });
+
+    req.end();
+
+    setTimeout(resolve, 4500);
+  });
+}
+
+function terminatePythonProcess() {
+  if (!pythonProcess) {
+    return;
+  }
+
+  logToFile('Stopping Python backend process...');
+  const proc = pythonProcess;
+  pythonProcess = null;
+
+  try {
+    proc.kill('SIGTERM');
+  } catch (err) {
+    logToFile(`SIGTERM failed: ${err.message}`, true);
+  }
+
+  setTimeout(() => {
+    try {
+      if (!proc.killed) {
+        proc.kill('SIGKILL');
+        logToFile('Python backend force-killed.');
+      }
+    } catch (err) {
+      logToFile(`Force kill failed: ${err.message}`, true);
+    }
+  }, 2500);
+}
+
+async function stopJarvisBackend() {
+  logToFile('JARVIS close — terminating voice, tasks, and background services...');
+  await requestBackendShutdown();
+  terminatePythonProcess();
 }
 
 function startBackend() {
@@ -195,15 +268,22 @@ if (!gotLock) {
 
 app.whenReady().then(createWindow);
 
-app.on('window-all-closed', () => {
-  // Gracefully terminate Python background process
-  if (pythonProcess) {
-    logToFile('Stopping Python backend...');
-    pythonProcess.kill('SIGINT');
+app.on('before-quit', (event) => {
+  if (!app.isQuitting) {
+    event.preventDefault();
+    app.isQuitting = true;
+    stopJarvisBackend().finally(() => app.quit());
   }
+});
 
+app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    app.quit();
+    if (!app.isQuitting) {
+      app.isQuitting = true;
+      stopJarvisBackend().finally(() => app.quit());
+    } else {
+      app.quit();
+    }
   }
 });
 
