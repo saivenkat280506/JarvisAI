@@ -27,6 +27,6 @@ def transcribe_audio(filename="temp_audio.wav"):
         result = subprocess.run(whisper_cmd, capture_output=True, text=True)
         return result.stdout.strip()
     except FileNotFoundError:
-        # Fallback fake STT if whisper is not compiled yet
-        print("whisper.cpp executable not found. Mocking STT.")
-        return "open chrome"
+        # whisper.cpp executable not found — return empty to avoid accidental command execution
+        print("whisper.cpp executable not found. STT unavailable.")
+        return ""

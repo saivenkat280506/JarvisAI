@@ -7,13 +7,12 @@ Continuously checks for failed tasks, handles retries, and manages scheduled ite
 import asyncio
 import time
 from executor.task_manager import task_manager
-from brain.responses import get_response
 
 
 class AgentLoop:
     def __init__(self):
         self.is_running = False
-        self.retry_queue = [] # List of (task_id, coro, attempt_count, metadata)
+        self.retry_queue = []  # List of (task_id, attempt_count, metadata)
 
     async def run(self):
         """The main background loop."""
@@ -34,41 +33,54 @@ class AgentLoop:
         print("[AgentLoop] Stopped.")
 
     async def _check_and_retry_tasks(self):
-        """Scans history for failures and attempts smart retries."""
-        # We look for tasks in history marked as 'failed' that haven't been retried
-        # In a real system, we'd track retry counts per task_id
-        # For now, we handle tasks added to our specific retry_queue
-        
+        """Scans retry queue and re-executes failed tools from the registry."""
         if not self.retry_queue:
             return
 
         print(f"[AgentLoop] Processing {len(self.retry_queue)} pending retries...")
         
-        # Process a copy to allow modification of the original queue
         current_queue = list(self.retry_queue)
         self.retry_queue.clear()
 
         for task_info in current_queue:
-            task_id, coro, attempt, meta = task_info
+            task_id, attempt, meta = task_info
             
             if attempt < 2:
                 print(f"[AgentLoop] Retrying task {task_id} (Attempt {attempt+1}/2)...")
-                # Wait a bit before retry
                 await asyncio.sleep(1 * (attempt + 1))
                 
-                # Re-submit to task manager
-                await task_manager.start_task(coro, name=meta.get("name", "Retry Task"), metadata=meta)
+                # Re-create the tool call from the registry at retry time
+                intent = meta.get("name", "")
+                params = meta.get("params", {})
+                try:
+                    from executor.tools_registry import get_tool
+                    tool_func = get_tool(intent)
+                    if tool_func:
+                        success, result = await asyncio.to_thread(tool_func, params)
+                        if success:
+                            print(f"[AgentLoop] Retry succeeded for {intent}")
+                            continue
+                        else:
+                            print(f"[AgentLoop] Retry failed for {intent}: {result}")
+                    else:
+                        print(f"[AgentLoop] Tool '{intent}' not found in registry for retry.")
+                except Exception as e:
+                    print(f"[AgentLoop] Retry exception for {intent}: {e}")
+                
+                # Re-queue with incremented attempt count
+                self.retry_queue.append((task_id, attempt + 1, meta))
             else:
-                # Final failure
                 print(f"[AgentLoop] Task {task_id} failed after max retries.")
-                from tts.pocket_tts import speak
-                await asyncio.to_thread(speak, "Task failed, sir.")
+                try:
+                    from tts.pocket_tts import speak
+                    await asyncio.to_thread(speak, "Task failed, sir.")
+                except Exception:
+                    pass
 
-    def add_to_retry_queue(self, coro, metadata):
-        """Adds a failed task to the retry queue."""
-        # we store the coroutine factory or the coro itself
-        # Note: coroutines cannot be reused, so we expect a callable that returns a coro
-        self.retry_queue.append(( "retry_" + str(int(time.time())), coro, 0, metadata))
+    def add_to_retry_queue(self, metadata: dict):
+        """Adds a failed task to the retry queue using metadata only."""
+        self.retry_queue.append(("retry_" + str(int(time.time())), 0, metadata))
 
 # Global instance
 agent_loop = AgentLoop()
+

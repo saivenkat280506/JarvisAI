@@ -5,6 +5,7 @@ Provides precise, confident, and respectful responses in the style of J.A.R.V.I.
 """
 
 import random
+from datetime import datetime
 
 RESPONSE_MAP = {
     "chat": {
@@ -18,14 +19,29 @@ RESPONSE_MAP = {
         "fail": ["I couldn’t open {app}, sir.", "Unable to locate {app}, sir.", "It appears {app} is not responding or missing from registry."]
     },
     "send_whatsapp": {
-        "start": ["Sending message to {name}, sir.", "Messaging {name} now, sir.", "On it, sir.", "Initiating secure transmission to {name}."],
-        "success": ["Message sent, sir.", "Done, sir.", "Delivered, sir.", "Transmission successful, sir."],
-        "fail": ["Failed to message {name}, sir.", "Transmission failed, sir.", "Connectivity issues are preventing communication with {name}."]
+        "start": ["Looking up the number and drafting the message, sir.", "Opening WhatsApp and searching by number, sir.", "Preparing the draft for confirmation, sir."],
+        "success": ["Draft ready — shall I send it, sir?", "Message typed. Say yes to send, sir.", "Awaiting your confirmation to send, sir."],
+        "fail": ["Failed to prepare the WhatsApp draft, sir.", "Could not open the chat by number, sir.", "Transmission setup failed, sir."]
+    },
+    "confirm_whatsapp_send": {
+        "start": ["Sending now, sir."],
+        "success": ["Message sent, sir.", "Delivered, sir.", "Transmission complete, sir."],
+        "fail": ["Could not send the message, sir.", "Send failed, sir."]
+    },
+    "cancel_whatsapp_send": {
+        "start": ["Cancelling the draft, sir."],
+        "success": ["Draft cancelled — nothing was sent, sir.", "Understood. Message not sent, sir."],
+        "fail": ["Could not clear the draft, sir."]
     },
     "play_local_music": {
         "start": ["Starting garage music, sir.", "Playing your local track, sir.", "Right away, sir."],
         "success": ["Garage music is playing, sir.", "Now playing, sir.", "Audio stream established, sir."],
         "fail": ["Couldn't find the local track, sir.", "Playback failed, sir."],
+    },
+    "daddys_home": {
+        "start": ["Welcome home, sir."],
+        "success": ["Welcome home, sir."],
+        "fail": ["Welcome home, sir. Local audio failed, but I am still online."],
     },
     "play_youtube_music": {
         "start": ["Playing {song} on YouTube Music, sir.", "Queueing {song} on YouTube Music, sir.", "Starting playback, sir."],
@@ -158,6 +174,65 @@ def respond_processing() -> str:
         "Processing that, sir.",
         "One moment, sir."
     ])
+
+
+def _daypart() -> str:
+    """morning | noon | afternoon | evening | night"""
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 14:
+        return "noon"
+    if 14 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 21:
+        return "evening"
+    return "night"
+
+
+def welcome_home_line() -> str:
+    """
+    Classic J.A.R.V.I.S. lines over garage music (time-aware).
+    Used for "Wake up. Daddy's home." and default garage playback.
+    """
+    part = _daypart()
+    if part == "morning":
+        return random.choice([
+            "Welcome home, sir. Let me check your schedule for today. You have no pending tasks to do, sir. Have a nice day, sir.",
+            "Welcome home, sir. I've reviewed your itinerary. No pending tasks. Have a nice day, sir.",
+            "Good morning, sir. Welcome home. Your calendar is clear — no pending tasks. Have a nice day, sir.",
+        ])
+    if part == "noon":
+        return random.choice([
+            "Welcome home, sir. It's noon, sir. You have to take rest from your garage so you could recover from your soreness.",
+            "Welcome home, sir. Midday already. I recommend rest after the garage so you can recover from the soreness.",
+            "It's noon, sir. Welcome home. Rest from the garage, sir — recover from your soreness.",
+        ])
+    if part == "afternoon":
+        return random.choice([
+            "Welcome home, sir. Afternoon already. You may want rest after the garage so you recover from the soreness.",
+            "Welcome home, sir. Systems nominal. A short rest would be wise after the garage, sir.",
+        ])
+    if part == "evening":
+        return random.choice([
+            "Welcome home, sir. Working late, are we? Are we on a project?",
+            "Welcome home, sir. Evening already. Shall I assume we are on a project?",
+        ])
+    # night / late
+    return random.choice([
+        "Welcome home, sir. Working late, sir. Are we on a project?",
+        "Welcome home, sir. Burning the midnight oil. Are we on a project?",
+        "Working late, sir. Welcome home. Are we on a project tonight?",
+    ])
+
+
+def garage_music_line() -> str:
+    """
+    Same class of spoken dialogue when user says play music / garage music.
+    Time-based J.A.R.V.I.S. briefing while the garage track plays.
+    """
+    return welcome_home_line()
+
 
 if __name__ == "__main__":
     # Tests

@@ -8,8 +8,13 @@ function sleep(ms) {
 }
 
 export async function navigate(url, { waitUntil = "domcontentloaded", timeout = 60000 } = {}) {
+  const { setActivePage } = await import("./browser.mjs");
   const page = await getPage();
+  await page.bringToFront().catch(() => {});
   await page.goto(url, { waitUntil, timeout });
+  setActivePage(page);
+  // Wait briefly for client-side shells (YT Music is heavily SPA)
+  await sleep(800);
   return { ok: true, url: page.url(), title: await page.title() };
 }
 
@@ -70,13 +75,29 @@ export async function scroll({
   direction = "down",
   times = 1,
   delayMs = 200,
+  /** instant | smooth — smooth is slower/visible for demos */
+  behavior = "smooth",
+  /** extra pause after each smooth scroll so motion is visible on camera */
+  settleMs = 0,
 } = {}) {
   const page = await getPage();
   const delta = direction === "up" ? -Math.abs(pixels) : Math.abs(pixels);
   const timings = [];
   for (let i = 0; i < times; i++) {
     const t0 = performance.now();
-    await page.evaluate((d) => window.scrollBy({ top: d, behavior: "instant" }), delta);
+    await page.evaluate(
+      (d, beh) => {
+        window.scrollBy({ top: d, left: 0, behavior: beh === "smooth" ? "smooth" : "instant" });
+      },
+      delta,
+      behavior
+    );
+    // Smooth scroll animates over ~300–800ms; wait so it is visible
+    if (behavior === "smooth") {
+      await sleep(Math.max(settleMs || 700, Math.min(1400, Math.abs(delta) * 0.9)));
+    } else if (settleMs > 0) {
+      await sleep(settleMs);
+    }
     const t1 = performance.now();
     timings.push(t1 - t0);
     if (i < times - 1 && delayMs > 0) await sleep(delayMs);
@@ -90,6 +111,7 @@ export async function scroll({
     ok: true,
     times,
     pixels: delta,
+    behavior,
     avgScrollMs: Number(avg.toFixed(2)),
     minMs: Number(Math.min(...timings).toFixed(2)),
     maxMs: Number(Math.max(...timings).toFixed(2)),
@@ -110,6 +132,11 @@ export async function waitFor(selector, { timeout = 20000 } = {}) {
 }
 
 export async function evalJs(expression) {
+  if (process.env.PUPPETEER_ALLOW_EVAL !== "1") {
+    throw new Error(
+      "eval action is disabled for security. Set PUPPETEER_ALLOW_EVAL=1 to enable."
+    );
+  }
   const page = await getPage();
   const result = await page.evaluate((expr) => {
     // eslint-disable-next-line no-eval
@@ -173,7 +200,7 @@ export async function runAction(action, params = {}) {
     case "scroll":
       return scroll(params);
     case "wait":
-      return wait(params.ms ?? params.seconds * 1000 ?? 1000);
+      return wait(params.ms ?? (params.seconds != null ? params.seconds * 1000 : 1000));
     case "wait_for":
       return waitFor(params.selector, params);
     case "eval":

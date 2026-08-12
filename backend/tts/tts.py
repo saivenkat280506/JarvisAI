@@ -29,18 +29,18 @@ def stop_edge_speech():
         pass
 
 
-def _pause_local_music():
+def _duck_local_music():
     try:
-        from executor.music_services import pause_local_music
-        pause_local_music()
+        from executor.music_services import duck_for_speech
+        duck_for_speech()
     except Exception:
         pass
 
 
 def _restore_local_music():
     try:
-        from executor import music_services
-        music_services._apply_music_volume()
+        from executor.music_services import resume_after_speech
+        resume_after_speech()
     except Exception:
         pass
 
@@ -54,7 +54,7 @@ async def speak(text: str):
         return
 
     _stop_event.clear()
-    _pause_local_music()
+    _duck_local_music()
 
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
         temp_mp3 = tmp_file.name

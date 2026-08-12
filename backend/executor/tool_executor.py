@@ -15,10 +15,12 @@ from executor.error_handler import log_error
 
 NO_SEARCH_FALLBACK_INTENTS = {
     "cancel_task", "music_control", "volume_control",
-    "play_local_music", "play_youtube_music", "play_youtube_search", "play_spotify",
-    "open_app", "send_whatsapp", "joke", "news", "greeting",
+    "play_local_music", "daddys_home", "play_youtube_music", "play_youtube_search", "play_spotify",
+    "open_app", "send_whatsapp", "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "joke", "news", "greeting",
     "spotify_login", "browser_action", "browser_scroll_test",
     "browser_click", "browser_type", "browser_scroll", "browser_navigate",
+    "linkedin_browser_demo", "web_search", "search_and_summarize",
 }
 
 
@@ -75,7 +77,6 @@ async def execute_tool(action_json: dict, background: bool = False):
                 
                 # Final fallback: add to retry queue in agent_loop
                 agent_loop.add_to_retry_queue(
-                    lambda: _run(), 
                     {"name": intent, "params": params}
                 )
                 return False, result

@@ -9,7 +9,11 @@
     "start": "next start",
     "lint": "eslint",
     "desktop": "electron .",
-    "package-desktop": "node package-desktop.js"
+    "package-desktop": "node package-desktop.js",
+    "jarvis": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/Jarvis-Launcher.ps1",
+    "jarvis:start": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/Jarvis-Launcher.ps1 -Start",
+    "jarvis:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/Jarvis-Launcher.ps1 -Stop",
+    "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/Jarvis-Launcher.ps1"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",

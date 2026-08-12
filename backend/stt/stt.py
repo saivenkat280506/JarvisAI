@@ -18,6 +18,8 @@ import time
 import math
 import struct
 import threading
+import io
+import wave
 
 from config import settings
 from stt.correct import correct_transcript
@@ -83,6 +85,53 @@ def pcm_to_wav(pcm_bytes: bytes) -> bytes:
     return header + pcm_bytes
 
 
+def _resample_pcm16(audio: np.ndarray, src_rate: int, dst_rate: int = SAMPLE_RATE) -> np.ndarray:
+    if src_rate == dst_rate or len(audio) == 0:
+        return audio.astype(np.int16, copy=False)
+    dst_len = max(1, int(round(len(audio) * dst_rate / src_rate)))
+    resampled = np.interp(
+        np.linspace(0, len(audio) - 1, dst_len, dtype=np.float64),
+        np.arange(len(audio), dtype=np.float64),
+        audio.astype(np.float64),
+    )
+    return np.clip(resampled, -32768, 32767).astype(np.int16)
+
+
+def wav_to_pcm(wav_bytes: bytes) -> bytes:
+    """Convert PCM WAV bytes into 16 kHz mono signed 16-bit PCM."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        frames = wav_file.readframes(wav_file.getnframes())
+
+    if not frames:
+        return b""
+
+    if sample_width == 1:
+        audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.int16) - 128) << 8
+    elif sample_width == 2:
+        audio = np.frombuffer(frames, dtype=np.int16)
+    elif sample_width == 4:
+        audio = (np.frombuffer(frames, dtype=np.int32) >> 16).astype(np.int16)
+    else:
+        raise ValueError(f"Unsupported WAV sample width: {sample_width}")
+
+    if channels > 1:
+        audio = audio.reshape(-1, channels).mean(axis=1).astype(np.int16)
+
+    return _resample_pcm16(audio, sample_rate).tobytes()
+
+
+def ensure_pcm_audio(audio_bytes: bytes) -> bytes:
+    """Accept raw PCM or PCM WAV and return 16 kHz mono signed 16-bit PCM."""
+    if not audio_bytes:
+        return b""
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        return wav_to_pcm(audio_bytes)
+    return audio_bytes
+
+
 def normalize_pcm(pcm_bytes: bytes) -> bytes:
     """Boost quiet mic input so Whisper picks up speech more reliably."""
     if not pcm_bytes:
@@ -102,6 +151,7 @@ def transcribe_groq(pcm_bytes: bytes) -> str:
     if client is None:
         return ""
 
+    pcm_bytes = ensure_pcm_audio(pcm_bytes)
     pcm_bytes = normalize_pcm(pcm_bytes)
     wav_bytes = pcm_to_wav(pcm_bytes)
     try:
@@ -145,6 +195,7 @@ def transcribe_local(pcm_bytes: bytes) -> str:
     model = _get_model()
     if model is None or not pcm_bytes:
         return ""
+    pcm_bytes = ensure_pcm_audio(pcm_bytes)
     pcm_bytes = normalize_pcm(pcm_bytes)
     audio_array = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     try:
@@ -167,6 +218,7 @@ def transcribe_audio(pcm_bytes: bytes) -> str:
     """Primary Groq transcription with local fallback; reject hallucinations."""
     if not pcm_bytes:
         return ""
+    pcm_bytes = ensure_pcm_audio(pcm_bytes)
     text = transcribe_groq(pcm_bytes)
     if not text or is_whisper_hallucination(text):
         local = transcribe_local(pcm_bytes)
@@ -196,6 +248,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
         while True:
             item = audio_queue.get()
             if item["type"] == "quit":
+                done_event.set()
                 break
 
             if item["type"] == "partial":
@@ -214,6 +267,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                     pass
 
             if item["type"] == "quit":
+                done_event.set()
                 break
 
             audio_bytes = item["data"]
@@ -260,6 +314,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
             silence_counter = 0
             last_partial_time = time.time()
             has_spoken = False
+            last_countdown = None
 
             print("[STT Pipeline] Stream active. VAD gating is ON.")
 
@@ -297,8 +352,6 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                         else None
                     )
 
-                    last_countdown = getattr(listen_stream, "_last_cd", None)
-
                     if (now - last_partial_time > PARTIAL_INTERVAL) or (
                         countdown_val is not None and countdown_val != last_countdown
                     ):
@@ -308,7 +361,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                             "countdown": countdown_val,
                         })
                         last_partial_time = now
-                        listen_stream._last_cd = countdown_val
+                        last_countdown = countdown_val
 
                     if silence_counter > SILENCE_LIMIT_FRAMES or len(buffer) >= 800:
                         if len(buffer) < MIN_SPEECH_FRAMES:
@@ -332,15 +385,13 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
     except Exception as e:
         print(f"[STT Pipeline] Mic Stream Crash: {e}")
         audio_queue.put({"type": "quit"})
+        done_event.set()
 
     done_event.wait(timeout=8.0)
     audio_queue.put({"type": "quit"})
     worker_thread.join(timeout=2.0)
 
-    final_text = correct_transcript(final_result[0].strip())
-    if is_phantom_transcript(final_text):
-        print(f"[STT Pipeline] Dropped phantom transcript: {final_text!r}")
-        final_text = ""
+    final_text = final_result[0].strip()
     print(f"[STT Pipeline] Completed: {final_text!r}")
     return final_text
 

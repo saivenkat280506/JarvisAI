@@ -10,28 +10,35 @@ interface QuickActionsProps {
 export default function QuickActions({ onSendMessage, onClearChat }: QuickActionsProps) {
   const actions = [
     {
-      label: "Summarize Workspace",
+      label: "Introduce Yourself",
       icon: MessageSquareDashed,
-      action: () => onSendMessage("Summarize the current workspace and active tasks."),
+      action: () => onSendMessage("Hello Jarvis, introduce yourself in one short sentence."),
       color: "text-blue-500 dark:text-blue-400",
       bg: "bg-blue-50 dark:bg-blue-950/40",
     },
     {
-      label: "Check Dependencies",
+      label: "What Time Is It?",
       icon: Cpu,
-      action: () => onSendMessage("Check the project for missing or outdated dependencies."),
+      action: () => onSendMessage("What time is it right now?"),
       color: "text-emerald-500 dark:text-emerald-400",
       bg: "bg-emerald-50 dark:bg-emerald-950/40",
     },
     {
-      label: "Run Diagnostics",
+      label: "Open Notepad",
+      icon: Zap,
+      action: () => onSendMessage("Open notepad."),
+      color: "text-violet-500 dark:text-violet-400",
+      bg: "bg-violet-50 dark:bg-violet-950/40",
+    },
+    {
+      label: "Tell a Joke",
       icon: ShieldAlert,
-      action: () => onSendMessage("Run a full system and backend diagnostic check."),
+      action: () => onSendMessage("Tell me a short witty joke."),
       color: "text-amber-500 dark:text-amber-400",
       bg: "bg-amber-50 dark:bg-amber-950/40",
     },
     {
-      label: "Clear Memory",
+      label: "Clear Chat",
       icon: Trash2,
       action: onClearChat,
       color: "text-rose-500 dark:text-rose-400",

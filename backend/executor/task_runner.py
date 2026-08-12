@@ -166,11 +166,21 @@ def read_news_headlines(query: str) -> str:
     except Exception as e:
         return f"ERROR: Could not fetch news: {e}"
 
-async def send_whatsapp(contact: str, message: str) -> str:
-    if not contact: return "ERROR: No contact specified."
-    from executor.automation import send_whatsapp_message
+async def send_whatsapp(contact: str, message: str, number: str = "") -> str:
+    if not contact and not number:
+        return "ERROR: No contact or phone number specified."
+    from executor.automation import prepare_whatsapp_message
+    from brain.memory import save_memory
     import asyncio
-    success, msg = await asyncio.to_thread(send_whatsapp_message, contact, message)
+    success, msg = await asyncio.to_thread(prepare_whatsapp_message, contact, message, number)
+    if success and message and message.strip():
+        save_memory("pending_whatsapp", {
+            "contact": contact,
+            "number": number,
+            "message": message.strip(),
+            "awaiting_confirm": True,
+        })
+        save_memory("last_contact", contact or number)
     return msg
 
 def write_code(code: str, filename: str = "", language: str = "python") -> str:
@@ -429,15 +439,39 @@ async def execute(groq_output: dict) -> str:
             query = params.get("query") or params.get("video") or params.get("song") or ""
             return play_youtube(query)
 
-        # ── Messaging ──
+        # ── Messaging (always search by phone number; draft then confirm) ──
         elif skill in ("send_whatsapp", "whatsapp_send_message"):
-            contact, msg = params.get("contact", ""), params.get("message", "")
+            contact = params.get("contact") or params.get("name") or ""
+            number = params.get("number") or params.get("phone") or ""
+            msg = params.get("message") or params.get("text") or ""
             if msg:
-                return await send_whatsapp(contact, msg)
+                return await send_whatsapp(contact, msg, number=number)
             return "ERROR: Message required."
 
         elif skill == "whatsapp_search_contact":
-            return await send_whatsapp(params.get("contact", ""), "")
+            contact = params.get("contact") or params.get("name") or ""
+            number = params.get("number") or params.get("phone") or ""
+            return await send_whatsapp(contact, "", number=number)
+
+        elif skill == "confirm_whatsapp_send":
+            from executor.automation import confirm_send_whatsapp_message
+            from brain.memory import get_memory, save_memory
+            import asyncio
+            pending = get_memory("pending_whatsapp") or {}
+            if not pending.get("awaiting_confirm"):
+                return "There is no WhatsApp message waiting to be sent, sir."
+            ok, msg = await asyncio.to_thread(confirm_send_whatsapp_message)
+            if ok:
+                save_memory("pending_whatsapp", None)
+            return msg
+
+        elif skill == "cancel_whatsapp_send":
+            from executor.automation import cancel_whatsapp_draft
+            from brain.memory import save_memory
+            import asyncio
+            ok, msg = await asyncio.to_thread(cancel_whatsapp_draft)
+            save_memory("pending_whatsapp", None)
+            return msg
 
         # ── System ──
         elif skill == "volume_control":

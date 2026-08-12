@@ -6,7 +6,7 @@ Clean separation of API endpoints from core logic.
 
 import os
 import json
-import tempfile
+import subprocess
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
@@ -17,6 +17,39 @@ from services.websocket_manager import manager
 from services.command_processor import process_command, process_command_with_timeout
 
 router = APIRouter()
+
+
+def _decode_upload_to_pcm(audio_bytes: bytes) -> bytes:
+    """Decode uploaded audio into 16 kHz mono signed 16-bit PCM for STT."""
+    if not audio_bytes:
+        return b""
+
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "pipe:1",
+        ],
+        input=audio_bytes,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        err = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Audio decode failed: {err}")
+    return result.stdout
 
 
 # ── Health ───────────────────────────────────────────────────────────────────
@@ -106,23 +139,18 @@ async def voice_endpoint(audio: UploadFile = File(...), id: str = Form(None)):
     text = ""
     try:
         request_id = id
-        temp_path = os.path.join(tempfile.gettempdir(), f"temp_{audio.filename}")
-        with open(temp_path, "wb") as f:
-            f.write(await audio.read())
+        upload_bytes = await audio.read()
 
         try:
             from stt.stt import transcribe_audio
-            with open(temp_path, "rb") as f:
-                pcm_data = f.read()
+            pcm_data = _decode_upload_to_pcm(upload_bytes)
             text = transcribe_audio(pcm_data)
 
-            await manager.broadcast_json({"type": "user_message", "text": text})
+            if text:
+                await manager.broadcast_json({"type": "user_message", "text": text})
         except Exception as e:
             print(f"[Voice] Transcription failed: {e}")
             text = ""
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
     finally:
         with flags.state_lock:
             flags.is_listening = False

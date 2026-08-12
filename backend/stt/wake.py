@@ -57,7 +57,7 @@ def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
             latency="high",
             callback=audio_callback,
         ):
-            audio_buffer: list[float] = []
+            audio_buffer: list = []
             target_samples = SAMPLE_RATE * CHUNK_DURATION
 
             while True:

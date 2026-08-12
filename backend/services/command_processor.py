@@ -18,11 +18,46 @@ from services.voice_loop import set_state, _time_of_day
 from services.websocket_manager import manager
 from brain.llm_brain import decide_action
 from brain.context_manager import get_current_context, resolve_pronouns
-from brain.memory import add_to_history
-from brain.personality import respond_success, respond_fail
+from brain.memory import add_to_history, get_memory, save_memory
+from brain.personality import (
+    respond_success,
+    respond_fail,
+    welcome_home_line,
+    garage_music_line,
+)
 from executor.tool_executor import execute_tool
 from tts.hybrid_tts import speak_hybrid as speak
 from config import settings
+
+# Affirmative / negative replies when a WhatsApp draft is awaiting send confirmation
+_WA_CONFIRM_RE = re.compile(
+    r"^(?:yes|yeah|yep|yup|ok|okay|sure|send|send\s+it|send\s+the\s+message|"
+    r"go\s+ahead|confirm|do\s+it|proceed|please\s+send|green\s+light|"
+    r"yes\s+send(?:\s+it)?|ok\s+send(?:\s+it)?)$",
+    re.IGNORECASE,
+)
+_WA_CANCEL_RE = re.compile(
+    r"^(?:no|nope|cancel|don'?t|don'?t\s+send|do\s+not\s+send|stop|"
+    r"never\s*mind|nevermind|abort|discard|no\s+send)$",
+    re.IGNORECASE,
+)
+
+# Puppeteer-backed intents — router-first, long timeout, tool result = spoken reply
+BROWSER_INTENTS = frozenset({
+    "play_youtube_music",
+    "play_youtube_search",
+    "play_spotify",
+    "spotify_login",
+    "search_browser",
+    "web_search",
+    "browser_scroll_test",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_action",
+    "linkedin_browser_demo",
+})
 
 JARVIS_SYSTEM_PROMPT = """
 You are J.A.R.V.I.S. — Just A Rather Very Intelligent System.
@@ -71,6 +106,9 @@ _CALL_END_PHRASES = (
 CONTROL_KEYWORDS = (
     "stop", "cancel", "pause", "resume", "volume", "mute", "unmute",
     "louder", "quieter", "increase", "decrease", "reduce", "lower", "raise",
+    # WhatsApp draft confirmation (must not be blocked by response guard)
+    "yes", "yeah", "yep", "yup", "ok", "okay", "sure", "send", "send it",
+    "go ahead", "confirm", "do it", "proceed", "no", "nope", "don't", "dont",
 )
 
 _CALL_END_EXACT = frozenset(_CALL_END_PHRASES) | frozenset(
@@ -132,11 +170,13 @@ async def _groq_generate(prompt: str, system: str = None, *, allow_greeting: boo
             {"role": "system", "content": sys_msg},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.55,
-        "max_tokens": 256,
+        "temperature": 0.5,
+        # Short spoken answers = faster LLM + faster TTS
+        "max_tokens": 140,
     }
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        # Reuse a shared client when possible — new client per call adds TLS latency
+        async with httpx.AsyncClient(timeout=8.0) as client:
             r = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {groq_key}"},
@@ -208,9 +248,16 @@ async def _fetch_news_summary() -> str:
 
 
 async def _speak_in_background(text: str, is_smart: bool, response_id: str):
+    """Fire TTS immediately; state updates must not delay first audio."""
     speak_epoch = flags.speak_epoch
+    if flags.speak_epoch != speak_epoch:
+        return
+    # Mark speaking without awaiting a full round-trip before audio starts
     try:
         await set_state(SystemState.SPEAKING)
+    except Exception:
+        pass
+    try:
         if flags.speak_epoch != speak_epoch:
             return
         await speak(text, is_smart=is_smart, response_id=response_id)
@@ -223,18 +270,76 @@ async def _speak_in_background(text: str, is_smart: bool, response_id: str):
             await set_state(SystemState.IDLE)
 
 
-async def _speak_then_play_music(text: str, response_id: str):
+async def _play_garage_and_speak(text: str, response_id: str, volume: int = 50):
+    """
+    Garage track + spoken J.A.R.V.I.S. dialogue.
+
+    Windows master volume (real speaker slider):
+      - 50% while music plays
+      - 25% while JARVIS speaks the dialogue
+      - back to 50% after the line
+    Music keeps playing under the voice (never hard-stopped for speech).
+    """
     from executor.music_services import play_local_garage
+    from executor.volume_control import (
+        begin_garage_volume_session,
+        garage_volume_for_speech,
+        garage_volume_for_play,
+        GARAGE_PLAY_VOLUME,
+    )
+    from tts.hybrid_tts import force_stop_all_tts
+    from tts.pocket_tts import speak as pocket_speak_sync
 
     speak_epoch = flags.speak_epoch
+    dialogue = (text or "").strip()
+    if not dialogue:
+        dialogue = welcome_home_line()
+
     try:
+        if flags.speak_epoch != speak_epoch:
+            return
+
+        # 1) Windows volume -> 50%, start garage track (mixer full; Windows is the knob)
+        play_level = int(volume) if volume else GARAGE_PLAY_VOLUME
+        await asyncio.to_thread(begin_garage_volume_session, play_level)
+        ok, msg = await asyncio.to_thread(play_local_garage, 100)
+        print(f"[Music] garage start ok={ok} {msg} | dialogue={dialogue[:80]!r}")
+
+        # Brief beat so the track is audible before the line
+        await asyncio.sleep(0.45)
+
         await set_state(SystemState.SPEAKING)
         if flags.speak_epoch != speak_epoch:
             return
-        await speak(text, is_smart=False, response_id=response_id)
-        if flags.speak_epoch != speak_epoch:
-            return
-        await asyncio.to_thread(play_local_garage)
+
+        # 2) Windows volume -> 25% for the spoken dialogue
+        await asyncio.to_thread(garage_volume_for_speech)
+        print(f"[Music] Speaking over garage at 25% Windows volume…")
+
+        # Force a clean TTS path so a stuck "already speaking" flag cannot skip dialogue
+        try:
+            force_stop_all_tts()
+        except Exception:
+            pass
+
+        # Speak with a unique response id so hybrid TTS will not treat it as a duplicate
+        dialogue_id = f"{response_id}_garage_line"
+        try:
+            await speak(dialogue, is_smart=False, response_id=dialogue_id)
+        except Exception as exc:
+            print(f"[Music] hybrid speak failed ({exc}); direct pocket TTS fallback")
+            await asyncio.to_thread(pocket_speak_sync, dialogue)
+
+        # 3) Restore Windows volume to 50% after the line (music still playing)
+        await asyncio.to_thread(garage_volume_for_play)
+        print("[Music] Dialogue done — Windows volume restored to 50%")
+
+    except Exception as exc:
+        print(f"[Music] _play_garage_and_speak error: {exc}")
+        try:
+            await asyncio.to_thread(garage_volume_for_play)
+        except Exception:
+            pass
     finally:
         if flags.speak_epoch != speak_epoch:
             await set_state(SystemState.IDLE)
@@ -352,26 +457,72 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
 
         print(f"[Core] Resolving intent for: {command_text}")
         command_text, resolved_params = resolve_pronouns(command_text)
+
+        # ── Pending WhatsApp draft: intercept yes/no before other routing ──
+        pending_wa = get_memory("pending_whatsapp") or {}
+        if isinstance(pending_wa, dict) and pending_wa.get("awaiting_confirm"):
+            confirm_text = command_text.strip().rstrip(".!?,")
+            if _WA_CONFIRM_RE.match(confirm_text):
+                print("[Core] Pending WhatsApp draft — user confirmed SEND")
+                intent, params = "confirm_whatsapp_send", {}
+                action_json = {"intent": intent, "parameters": params}
+                success, result = await execute_tool(action_json)
+                final_response = result if isinstance(result, str) else (
+                    "Message sent, sir." if success else "Could not send the message, sir."
+                )
+                flags.last_assistant_response = final_response
+                if flags.speak_epoch == command_epoch:
+                    asyncio.create_task(
+                        _speak_in_background(final_response, is_smart=False, response_id=response_id)
+                    )
+                await _push_chat(final_response, voice=voice)
+                yield f"data: {json.dumps({'text': final_response, 'model': 'groq', 'done': False})}\n\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                flags.last_response_time = _time.time()
+                flags.last_intent = intent
+                return
+            if _WA_CANCEL_RE.match(confirm_text):
+                print("[Core] Pending WhatsApp draft — user CANCELLED")
+                intent, params = "cancel_whatsapp_send", {}
+                action_json = {"intent": intent, "parameters": params}
+                success, result = await execute_tool(action_json)
+                final_response = result if isinstance(result, str) else "Draft cancelled, sir."
+                flags.last_assistant_response = final_response
+                if flags.speak_epoch == command_epoch:
+                    asyncio.create_task(
+                        _speak_in_background(final_response, is_smart=False, response_id=response_id)
+                    )
+                await _push_chat(final_response, voice=voice)
+                yield f"data: {json.dumps({'text': final_response, 'model': 'groq', 'done': False})}\n\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                flags.last_response_time = _time.time()
+                flags.last_intent = intent
+                return
+
         from brain.router import route_command
+        t_route0 = _time.time()
         intent, params = route_command(command_text)
         if resolved_params:
             params = {**(params or {}), **resolved_params}
 
         if not intent:
-            print("[Core] No hardcoded route found. Consulting LLM Brain...")
+            # Fast Groq 8B-instant intent only (not 70B) — browser tools prefer router above
+            print("[Core] No hardcoded route — fast LLM router (llama-3.1-8b-instant)...")
             context = get_current_context()
-            time_context = f"\nCurrent Local Time: {datetime.now().strftime('%A, %B %d, %Y, %I:%M %p')}\n"
-            context = time_context + context
+            time_context = f"\nTime: {datetime.now().strftime('%A %I:%M %p')}\n"
+            context = time_context + (context or "")[-300:]
             action_json = await asyncio.to_thread(decide_action, command_text, context)
             intent = action_json.get("intent")
-            params = action_json.get("parameters", {})
+            params = action_json.get("parameters", {}) or {}
+            print(f"[Core] LLM route in {(_time.time()-t_route0)*1000:.0f}ms -> {intent}")
         else:
-            print(f"[Core] Hardcoded intent found: {intent}")
+            print(f"[Core] Fast route ({(_time.time()-t_route0)*1000:.0f}ms): {intent}")
             action_json = {"intent": intent, "parameters": params or {}}
 
         print(f"[Core] Final Intent: {intent}, Params: {params}")
 
         final_response: str | None = None
+        ack: str | None = None  # optional early spoken ack (browser tools)
 
         if intent == "greeting":
             tod = _time_of_day()
@@ -381,11 +532,9 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             final_response = await _groq_generate(
                 "The user asked what you can do. List your capabilities concisely in 2-3 sentences. "
                 "Do not greet. Start directly with what you can do. "
-                "You can: answer questions, open apps, play local garage music, play songs on YouTube Music, "
-                "YouTube Search, or Spotify, control music with pause, resume, stop, restart, and music volume "
-                "from 0 to 100, plus system volume control, "
-                "send WhatsApp messages, "
-                "search the web, tell jokes, read news headlines, and run autonomous browser tasks.",
+                "You can: answer questions, open apps, play songs on YouTube Music via browser automation, "
+                "run scroll demos, search Google in a real browser, control volume, "
+                "send WhatsApp messages, tell jokes, and read news. Be concise.",
                 system=JARVIS_SYSTEM_PROMPT,
             )
 
@@ -485,8 +634,50 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                 )
 
         elif intent == "play_local_music":
+            # Garage track + full time-based J.A.R.V.I.S. dialogue (Windows vol 50/25)
             add_to_history(command_text)
-            final_response = "Playing garage music, sir."
+            final_response = welcome_home_line()
+            print(f"[Core] play_local_music dialogue: {final_response!r}")
+
+        elif intent == "daddys_home":
+            # "Wake up. Daddy's home." — garage music + time-based welcome dialogue
+            add_to_history(command_text)
+            final_response = welcome_home_line()
+            print(f"[Core] daddys_home dialogue: {final_response!r}")
+
+        elif intent in BROWSER_INTENTS:
+            # Puppeteer path: short ack (optional), run tool, speak tool message — no extra LLM
+            if intent in ("play_youtube_music", "play_youtube_search"):
+                song = (params or {}).get("song") or (params or {}).get("query") or "that track"
+                ack = f"Playing {song} on YouTube Music, sir."
+            elif intent == "search_browser" or intent == "web_search":
+                q = (params or {}).get("query") or "that"
+                ack = f"Searching the web for {q}, sir."
+            elif intent == "browser_scroll_test":
+                ack = "Running a scroll demo, sir."
+            elif intent == "linkedin_browser_demo":
+                ack = "Starting the browser demo, sir."
+
+            if ack and not voice:
+                yield f"data: {json.dumps({'text': ack, 'model': 'router', 'done': False})}\n\n"
+            if ack and flags.speak_epoch == command_epoch:
+                # Non-blocking short ack; tool result will speak after
+                asyncio.create_task(
+                    speak(ack, is_smart=False, response_id=f"{response_id}_ack")
+                )
+
+            t0 = _time.time()
+            success, result = await execute_tool(action_json)
+            print(f"[Core] Browser tool {intent} done in {_time.time()-t0:.1f}s success={success}")
+
+            if success:
+                add_to_history(command_text)
+                final_response = result if isinstance(result, str) else respond_success(intent, params or {})
+            else:
+                final_response = (
+                    result if isinstance(result, str) and result else respond_fail(intent, params or {})
+                )
+            # Do not steal focus from the automation browser mid-task
 
         else:
             success, result = await execute_tool(action_json)
@@ -494,30 +685,54 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             if success:
                 add_to_history(command_text)
                 final_response = result if isinstance(result, str) else respond_success(intent, params or {})
-                if intent not in ("play_local_music", "music_control", "volume_control"):
+                if intent not in (
+                    "play_local_music", "daddys_home", "music_control", "volume_control"
+                ):
                     await manager.broadcast_json({"action": "focus_window"})
             else:
                 final_response = result if isinstance(result, str) and result else respond_fail(intent, params or {})
 
         if final_response:
-            if intent != "greeting":
+            # Keep time-based welcome openers (do not strip "Welcome home")
+            if intent not in ("greeting", "daddys_home", "play_local_music"):
                 final_response = _strip_leading_greeting(final_response)
             flags.last_assistant_response = final_response
+
+            # Start voice FIRST (before UI push / SSE) so audio begins ASAP after text is ready
             if flags.speak_epoch != command_epoch:
                 await set_state(SystemState.IDLE)
             else:
-                is_smart = intent in ["search_browser", "chat", "read_headlines", "smart_search", "news", "intro", "capabilities", "qa"]
-                if intent == "play_local_music":
-                    asyncio.create_task(_speak_then_play_music(final_response, response_id))
+                is_smart = intent in [
+                    "chat", "read_headlines", "smart_search", "news", "intro", "capabilities", "qa"
+                ]
+                if intent in ("play_local_music", "daddys_home"):
+                    vol = int((params or {}).get("volume") or 50)
+                    # Music plays first; dialogue speaks while track continues (ducked, not stopped)
+                    asyncio.create_task(
+                        _play_garage_and_speak(final_response, response_id, volume=vol)
+                    )
+                elif intent in BROWSER_INTENTS and intent in (
+                    "play_youtube_music", "play_youtube_search", "search_browser", "web_search",
+                    "browser_scroll_test", "linkedin_browser_demo",
+                ):
+                    # Already spoke a short ack; speak final tool result once
+                    # Skip duplicate if tool result is almost the same as the ack
+                    if not (ack and final_response and final_response.strip().lower() == ack.strip().lower()):
+                        asyncio.create_task(
+                            _speak_in_background(final_response, is_smart=False, response_id=response_id)
+                        )
                 else:
-                    # Start TTS before pushing text so audio begins while the UI updates.
-                    asyncio.create_task(_speak_in_background(final_response, is_smart=is_smart, response_id=response_id))
+                    asyncio.create_task(
+                        _speak_in_background(final_response, is_smart=is_smart, response_id=response_id)
+                    )
+
+            # UI + SSE in parallel with speech (do not await before scheduling TTS)
             await _push_chat(final_response, voice=voice)
+            model_tag = "router" if intent in BROWSER_INTENTS else "groq"
+            yield f"data: {json.dumps({'text': final_response, 'model': model_tag, 'done': False})}\n\n"
         else:
             await set_state(SystemState.IDLE)
 
-        if final_response:
-            yield f"data: {json.dumps({'text': final_response, 'model': 'groq', 'done': False})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"
 
         flags.last_response_time = _time.time()
@@ -525,9 +740,35 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             flags.last_intent = intent
 
     except Exception as e:
-        print(f"[Process Error] {str(e)}")
+        # Never crash the HTTP stream with an empty UI - always speak/show a recovery line
+        err_msg = str(e)
+        try:
+            print(f"[Process Error] {err_msg}")
+        except Exception:
+            print("[Process Error] (unprintable exception)")
+        recovery = (
+            "I hit a snag executing that, sir. Please try the command again."
+        )
+        try:
+            flags.last_assistant_response = recovery
+            epoch_ok = True
+            try:
+                epoch_ok = flags.speak_epoch == command_epoch  # type: ignore[name-defined]
+            except Exception:
+                epoch_ok = True
+            if epoch_ok:
+                asyncio.create_task(
+                    _speak_in_background(recovery, is_smart=False, response_id=str(uuid.uuid4()))
+                )
+            await _push_chat(recovery, voice=voice)
+            yield f"data: {json.dumps({'text': recovery, 'model': 'error', 'done': False})}\n\n"
+        except Exception as inner:
+            try:
+                print(f"[Process Error] recovery failed: {inner}")
+            except Exception:
+                pass
         await set_state(SystemState.IDLE)
-        yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+        yield f"data: {json.dumps({'error': err_msg, 'done': True})}\n\n"
     finally:
         with flags.state_lock:
             flags.is_processing = False
@@ -539,7 +780,21 @@ async def process_command_with_timeout(command_text: str, request_id: str = None
     Voice/STT sessions get a longer budget so tools can finish and TTS can speak
     a proper reply instead of cutting off mid-task.
     """
-    timeout_s = 90.0 if voice else 45.0
+    # Browser automation (YouTube Music / scroll / search) can take 1–4 minutes.
+    low = (command_text or "").lower()
+    browserish = any(
+        k in low
+        for k in (
+            "play ", "youtube", "scroll", "search for", "google ",
+            "browser", "demo", "puppeteer",
+        )
+    )
+    if browserish:
+        timeout_s = 300.0
+    elif voice:
+        timeout_s = 180.0
+    else:
+        timeout_s = 120.0
     try:
         async with asyncio.timeout(timeout_s):
             async for item in process_command(command_text, request_id, voice):

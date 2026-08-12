@@ -8,6 +8,7 @@ import { runAction } from "./actions.mjs";
 import { playYoutube } from "./scenarios/youtube.mjs";
 import { login as spotifyLogin, search as spotifySearch, isLoggedIn as spotifyIsLoggedIn } from "./scenarios/spotify.mjs";
 import { scrollSpeedTest } from "./scenarios/scroll.mjs";
+import { searchAndScroll } from "./scenarios/web_search.mjs";
 
 const HOST = process.env.PUPPETEER_HOST || "127.0.0.1";
 const PORT = Number(process.env.PUPPETEER_PORT || 3920);
@@ -35,7 +36,12 @@ async function handleCommand(body) {
 
   switch (action) {
     case "health":
-      return { ok: true, service: "jarvis-puppeteer", ...browserStatus() };
+    case "status": {
+      // Force browser launch so profile mode is visible
+      const { ensureBrowser, status: st } = await import("./browser.mjs");
+      await ensureBrowser({ headless: process.env.PUPPETEER_HEADLESS === "1" });
+      return { ok: true, service: "jarvis-puppeteer", ...st() };
+    }
 
     case "youtube_play":
     case "play_youtube":
@@ -60,7 +66,26 @@ async function handleCommand(body) {
       return spotifyIsLoggedIn();
 
     case "scroll_test":
-      return scrollSpeedTest(params);
+      return scrollSpeedTest({
+        url: params.url,
+        pixels: params.pixels,
+        times: params.times,
+        delayMs: params.delayMs ?? params.delay_ms,
+        behavior: params.behavior,
+        settleMs: params.settleMs ?? params.settle_ms,
+        mode: params.mode,
+      });
+
+    case "web_search":
+    case "search_and_scroll":
+    case "google_search":
+      return searchAndScroll({
+        query: params.query || params.q || params.text,
+        times: params.times,
+        pixels: params.pixels,
+        delayMs: params.delayMs ?? params.delay_ms ?? 5000,
+        settleMs: params.settleMs ?? params.settle_ms ?? 900,
+      });
 
     case "close":
       await closeBrowser();
@@ -91,8 +116,17 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const result = await handleCommand(body);
       // needsCredentials is a soft failure (page opened); still HTTP 200 for clients
-      const hardFail = result.ok === false && !result.needsCredentials && result.error;
-      return send(res, hardFail ? 500 : result.ok === false && !result.needsCredentials ? 400 : 200, result);
+      let statusCode = 200;
+      if (result.ok === false) {
+        if (result.needsCredentials) {
+          statusCode = 200; // soft failure — page is open for manual action
+        } else if (result.error) {
+          statusCode = 500; // hard failure with error message
+        } else {
+          statusCode = 400; // client error without specific error string
+        }
+      }
+      return send(res, statusCode, result);
     }
 
     send(res, 404, { ok: false, error: "Not found. POST /command { action, ...params }" });

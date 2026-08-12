@@ -1,7 +1,8 @@
 """
 startup.py — Background Service Launcher for JARVIS
 ====================================================
-Starts voice_command_loop, agent_loop, process_monitor, and TTS warmup.
+Starts voice_command_loop, agent_loop, process_monitor, TTS warmup,
+and Puppeteer control-plane warm-start (low latency first browser cmd).
 """
 
 import asyncio
@@ -23,6 +24,17 @@ async def _warm_up_tts():
         print(f"[Startup] Pocket TTS warm-up failed: {e}")
 
 
+async def _warm_puppeteer():
+    """Pre-start Node Puppeteer server so first browser command is fast."""
+    try:
+        from executor.puppeteer_client import ensure_server
+
+        ok = await asyncio.to_thread(ensure_server, True)
+        print(f"[Startup] Puppeteer control plane ready={ok}")
+    except Exception as e:
+        print(f"[Startup] Puppeteer warm-up failed (will start on demand): {e}")
+
+
 async def start_all_services():
     """Called during FastAPI lifespan to start all background services."""
     from executor.agent_loop import agent_loop
@@ -34,3 +46,4 @@ async def start_all_services():
     asyncio.create_task(voice_command_loop())
 
     asyncio.create_task(_warm_up_tts())
+    asyncio.create_task(_warm_puppeteer())

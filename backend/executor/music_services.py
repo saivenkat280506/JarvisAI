@@ -20,10 +20,16 @@ GARAGE_TRACK = LOCAL_MUSIC_DIR / "garage_music.mp3"
 
 _mixer_lock = threading.Lock()
 _local_paused = False
-_music_volume = 80          # 0–100 for local music playback
+_music_volume = 50          # 0–100 target for local garage track only (not system volume)
 _music_muted = False
-_music_muted_level = 80     # restore level after unmute
+_music_muted_level = 50     # restore level after unmute
 _current_track = ""
+_duck_active = False        # True while volume is temporarily lowered (speech/listen)
+_duck_level = 20            # temporary level while ducked
+# Listening: duck to 20%. Speaking over music: duck slightly so Jarvis is clear.
+DUCK_LISTEN_PCT = 20
+DUCK_SPEAK_PCT = 25
+DEFAULT_GARAGE_VOLUME = 50
 
 
 def _ensure_mixer():
@@ -33,10 +39,15 @@ def _ensure_mixer():
 
 
 def _apply_music_volume():
-    """Apply stored music volume to pygame mixer (0.0–1.0 scale)."""
+    """Apply effective volume to pygame mixer only (never touches Windows master volume)."""
     if not pygame.mixer.get_init():
         return
-    level = 0.0 if _music_muted else max(0.0, min(1.0, _music_volume / 100.0))
+    if _music_muted:
+        level = 0.0
+    elif _duck_active:
+        level = max(0.0, min(1.0, _duck_level / 100.0))
+    else:
+        level = max(0.0, min(1.0, _music_volume / 100.0))
     pygame.mixer.music.set_volume(level)
 
 
@@ -45,12 +56,13 @@ def get_music_volume() -> int:
 
 
 def set_music_volume(level: int) -> tuple[bool, str]:
-    global _music_volume, _music_muted
+    global _music_volume, _music_muted, _duck_active
     _music_volume = max(0, min(100, int(level)))
     _music_muted = False
+    _duck_active = False
     with _mixer_lock:
         _apply_music_volume()
-    return True, f"Music volume set to {_music_volume}, sir."
+    return True, f"Garage music volume set to {_music_volume}, sir."
 
 
 def adjust_music_volume(delta: int) -> tuple[bool, str]:
@@ -83,19 +95,27 @@ def unmute_music() -> tuple[bool, str]:
 
 def stop_local_music() -> bool:
     """Stop background local music playback."""
-    global _local_paused, _current_track
+    global _local_paused, _current_track, _duck_active
+    stopped = False
     with _mixer_lock:
         _local_paused = False
+        _duck_active = False
         _current_track = ""
         if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
             pygame.mixer.music.stop()
             pygame.mixer.music.unload()
-            return True
-    return False
+            stopped = True
+    try:
+        from executor.volume_control import end_garage_volume_session
+        end_garage_volume_session(restore=True)
+    except Exception:
+        pass
+    return stopped
 
 
 def pause_local_music() -> tuple[bool, str]:
-    global _local_paused
+    """Hard pause (user said pause) — keeps track position."""
+    global _local_paused, _duck_active
     with _mixer_lock:
         if not pygame.mixer.get_init() or _local_paused:
             if _local_paused:
@@ -105,49 +125,108 @@ def pause_local_music() -> tuple[bool, str]:
             return False, "No music is playing, sir."
         pygame.mixer.music.pause()
         _local_paused = True
+        _duck_active = False
     return True, "Music paused, sir."
 
 
-def resume_after_speech():
-    """Resume local music if it was paused while JARVIS was speaking."""
-    global _local_paused
+def _duck_to(level: int) -> bool:
+    """
+    Lower garage track volume without stopping playback.
+    Used while JARVIS speaks or while listening to the user.
+    """
+    global _duck_active, _duck_level
     with _mixer_lock:
-        if not _local_paused or not pygame.mixer.get_init():
-            return
-        pygame.mixer.music.unpause()
-        _local_paused = False
+        if not pygame.mixer.get_init():
+            return False
+        if _local_paused or not pygame.mixer.music.get_busy():
+            return False
+        _duck_level = max(0, min(100, int(level)))
+        _duck_active = True
         _apply_music_volume()
-
-
-def pause_for_listening() -> bool:
-    """Pause music so the mic does not pick up playback during STT."""
-    global _local_paused
-    with _mixer_lock:
-        if not pygame.mixer.get_init() or _local_paused:
-            return False
-        if not pygame.mixer.music.get_busy():
-            return False
-        pygame.mixer.music.pause()
-        _local_paused = True
         return True
 
 
+def _unduck() -> None:
+    """Restore garage track to its normal volume (e.g. 50%)."""
+    global _duck_active
+    with _mixer_lock:
+        if not _duck_active:
+            return
+        _duck_active = False
+        if pygame.mixer.get_init() and not _local_paused:
+            _apply_music_volume()
+
+
+def duck_for_speech() -> bool:
+    """
+    Keep garage music playing under JARVIS voice.
+    Windows master volume is set to 25% by volume_control.garage_volume_for_speech().
+    Mixer stays audible; system slider does the real duck.
+    """
+    try:
+        from executor.volume_control import garage_volume_for_speech, is_garage_volume_session
+        if is_garage_volume_session() or is_local_music_playing():
+            garage_volume_for_speech()
+            return True
+    except Exception as exc:
+        print(f"[Music] duck_for_speech windows vol failed: {exc}")
+    # Fallback: lower pygame mixer only
+    return _duck_to(DUCK_SPEAK_PCT)
+
+
+def resume_after_speech():
+    """Restore Windows 50% (or mixer) after JARVIS finishes speaking."""
+    try:
+        from executor.volume_control import garage_volume_for_play, is_garage_volume_session
+        if is_garage_volume_session():
+            garage_volume_for_play()
+            return
+    except Exception:
+        pass
+    _unduck()
+
+
+def pause_for_listening() -> bool:
+    """
+    Do NOT stop music. Drop Windows master volume to 20% so the mic hears
+    the user, not the garage track.
+    """
+    try:
+        from executor.volume_control import garage_volume_for_listen, is_garage_volume_session
+        if is_garage_volume_session() or is_local_music_playing():
+            garage_volume_for_listen()
+            return True
+    except Exception as exc:
+        print(f"[Music] pause_for_listening windows vol failed: {exc}")
+    return _duck_to(DUCK_LISTEN_PCT)
+
+
 def resume_after_listening():
-    """Resume music after voice listening if it was paused for STT."""
-    resume_after_speech()
+    """Restore Windows 50% after STT finishes listening."""
+    try:
+        from executor.volume_control import garage_volume_for_play, is_garage_volume_session
+        if is_garage_volume_session():
+            garage_volume_for_play()
+            return
+    except Exception:
+        pass
+    _unduck()
 
 
 def resume_local_music() -> tuple[bool, str]:
-    global _local_paused
+    global _local_paused, _duck_active
     with _mixer_lock:
         if not pygame.mixer.get_init():
             return False, "No music to resume, sir."
         if not _local_paused:
             if pygame.mixer.music.get_busy():
+                _duck_active = False
+                _apply_music_volume()
                 return True, "Music is already playing, sir."
             return False, "No paused music found, sir."
         pygame.mixer.music.unpause()
         _local_paused = False
+        _duck_active = False
         _apply_music_volume()
     return True, "Music resumed, sir."
 
@@ -189,22 +268,29 @@ def _start_garage_track() -> bool:
     return pygame.mixer.music.get_busy()
 
 
-def play_local_garage() -> tuple[bool, str]:
-    """Play the default garage track silently in the background — no player window."""
+def play_local_garage(volume: int | None = DEFAULT_GARAGE_VOLUME) -> tuple[bool, str]:
+    """
+    Play the default garage track from backend/local_music/garage_music.mp3.
+    Only adjusts pygame garage-track volume (default 50%) — never Windows master volume.
+    """
+    global _duck_active
     if not GARAGE_TRACK.exists():
         return False, "Local garage track not found, sir."
 
     try:
+        target = DEFAULT_GARAGE_VOLUME if volume is None else int(volume)
+        set_music_volume(target)
         with _mixer_lock:
+            _duck_active = False
             if _start_garage_track():
-                return True, "Playing garage music, sir."
+                return True, f"Playing garage music at {_music_volume} percent, sir."
 
             # Retry once after reinitializing the mixer (Windows/SDL can miss the first start).
             if pygame.mixer.get_init():
                 pygame.mixer.quit()
             _start_garage_track()
             if pygame.mixer.music.get_busy():
-                return True, "Playing garage music, sir."
+                return True, f"Playing garage music at {_music_volume} percent, sir."
 
         return False, "Music playback failed to start, sir."
     except Exception as exc:
