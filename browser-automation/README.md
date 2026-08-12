@@ -55,3 +55,21 @@ JARVIS auto-starts the server on first browser tool use.
 - “Log in to Spotify”
 - “Play Back in Black on Spotify”
 - “Scroll speed test”
+- **“LinkedIn browser demo”** / **“Run the demo”** — one-shot:
+  1. Scroll speed test (Wikipedia AC/DC)
+  2. Spotify login
+  3. Play AC/DC Back in Black on YouTube
+
+### CLI one-shot (for recording)
+
+```powershell
+cd browser-automation
+powershell -ExecutionPolicy Bypass -File .\run_linkedin_demo.ps1
+```
+
+Or from Python:
+
+```python
+from executor.browser_puppeteer import linkedin_browser_demo
+print(linkedin_browser_demo({"song": "AC/DC Back in Black"}))
+```

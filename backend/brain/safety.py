@@ -7,13 +7,16 @@ Ensures LLM output is valid and safe before execution.
 import json
 
 ALLOWED_INTENTS = [
-    "open_app", "send_whatsapp", "play_local_music", "play_youtube_music",
+    "open_app", "send_whatsapp", "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "play_local_music", "daddys_home", "play_youtube_music",
     "play_youtube_search", "play_spotify", "music_control", "volume_control", "search_browser",
     "cancel_task", "chat", "greeting", "capabilities", "news", "joke",
     "qa", "intro", "focus_window", "web_agent", "smart_search", "read_headlines",
-    # Puppeteer advanced browser automation
+    "time",
+    # Puppeteer browser automation (wired end-to-end)
     "spotify_login", "browser_action", "browser_scroll_test",
     "browser_click", "browser_type", "browser_scroll", "browser_navigate",
+    "linkedin_browser_demo", "web_search", "search_and_summarize",
 ]
 
 def validate_action(action_json: dict):

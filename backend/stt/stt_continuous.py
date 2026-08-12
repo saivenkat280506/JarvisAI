@@ -107,11 +107,6 @@ class STT:
 
     def start(self, block: bool = False):
         """Start listening. block=True to wait (e.g. in __main__)."""
-        self._running = True
-        self._transcription_thread = threading.Thread(target=self._transcription_worker, daemon=True)
-        self._transcription_thread.start()
-        self._transcribe_thread = threading.Thread(target=self._transcribe_loop, daemon=True)
-        self._transcribe_thread.start()
         self._stream = sd.InputStream(
             samplerate=self.cfg["sample_rate"],
             channels=self.cfg["channels"],
@@ -119,7 +114,19 @@ class STT:
             blocksize=int(self.cfg["sample_rate"] * self.cfg["chunk_ms"] / 1000),
             callback=self._audio_callback,
         )
-        self._stream.start()
+        self._running = True
+        self._transcription_thread = threading.Thread(target=self._transcription_worker, daemon=True)
+        self._transcription_thread.start()
+        self._transcribe_thread = threading.Thread(target=self._transcribe_loop, daemon=True)
+        self._transcribe_thread.start()
+        try:
+            self._stream.start()
+        except Exception:
+            self._running = False
+            self._transcription_thread.join(timeout=1.0)
+            self._transcribe_thread.join(timeout=1.0)
+            self._stream.close()
+            raise
         print("[STT] Listening… (Ctrl+C to stop)")
         if block:
             try:
@@ -134,6 +141,10 @@ class STT:
         if hasattr(self, "_stream"):
             self._stream.stop()
             self._stream.close()
+        if hasattr(self, "_transcription_thread"):
+            self._transcription_thread.join(timeout=2.0)
+        if hasattr(self, "_transcribe_thread"):
+            self._transcribe_thread.join(timeout=2.0)
         print("\n[STT] Stopped.")
 
     def transcribe_file(self, path: str) -> str:
@@ -194,10 +205,10 @@ class STT:
             latency = (time.perf_counter() - t0) * 1000
             
             if task_type == "partial":
-                if text.strip():
+                if text.strip() and self._running:
                     self.on_partial(text.strip())
             elif task_type == "final":
-                if text.strip():
+                if text.strip() and self._running:
                     print(f"[STT] ({latency:.0f}ms) {text.strip()}")
                     self.on_text(text.strip())
 

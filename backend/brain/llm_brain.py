@@ -1,88 +1,108 @@
 """
-llm_brain.py — Intelligence Layer
-=================================
-Uses an LLM to map user input to a specific tool intent.
+llm_brain.py — Fast intent router via Groq llama-3.1-8b-instant
+==============================================================
+Intent classification only (low latency). Long-form chat/QA uses
+llama-3.1-8b-instant in command_processor._groq_generate as well.
+Reserve 70B only for rare heavy reasoning if ever needed.
 """
 
-import os
+from __future__ import annotations
+
 import json
+import os
+import re
+import sys
+
 from langchain_groq import ChatGroq
 
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import settings
 
-# Explicitly load .env from the directory of the executable or current script
-# Handled by config.py
+# Fast model for tool routing (~100–300ms on Groq)
+ROUTER_MODEL = os.environ.get("JARVIS_ROUTER_MODEL", "llama-3.1-8b-instant")
 
 llm = ChatGroq(
-    temperature=0, 
-    model_name="llama-3.3-70b-versatile", 
-    groq_api_key=settings.GROQ_API_KEY
+    temperature=0,
+    model_name=ROUTER_MODEL,
+    groq_api_key=settings.GROQ_API_KEY,
+    max_tokens=120,
 )
 
-SYSTEM_PROMPT = """
-You are JARVIS, an Intelligent Task Executor, NOT a basic command runner. 
-Your goal is to convert user commands into COMPLETE actions with meaningful data retrieval, not just UI navigation.
+# Compact prompt → fewer tokens → lower latency
+SYSTEM_PROMPT = """You map user text to ONE JARVIS tool intent. Return ONLY JSON:
+{"intent":"...","parameters":{...}}
 
-CORE EXECUTION RULES:
-1. INTENT BREAKDOWN: If a command has multiple steps (e.g., "search news and read them"), handle it as a single high-level intent that triggers the most comprehensive tool.
-2. INFORMATION RETRIEVAL: Never just "open a browser" if you can fetch the data programmatically. Use tools that return data.
-3. COMPLETENESS: If the user asks for information (Latest News, Weather, Search), your goal is to Fetch + Summarize + Speak.
-4. NEWS HANDLING: For "latest news" or topics, use 'read_headlines'. You must provide a list of headlines with 1-line summaries.
-5. NO PARTIAL EXECUTION: Do not stop halfway. If you search for something, provide the answer in the response.
+BROWSER (Puppeteer — preferred for web/music UI):
+- play_youtube_music {"song":"..."}  — play any song (default for "play X")
+- play_youtube_search {"song":"..."} — same as music (legacy)
+- browser_scroll_test {} — "scroll test" / "scroll speed test"
+- search_browser {"query":"..."} — "search for X" / "google X" (opens browser + scroll)
+- browser_navigate {"url":"https://..."}
+- browser_click {"selector":"..."} or {"text":"..."}
+- browser_type {"selector":"...","text":"..."}
+- browser_scroll {"pixels":350,"times":3,"delayMs":5000}
+- browser_action {"action":"youtube_music_play|scroll_test|web_search|..."}
+- linkedin_browser_demo {} — scroll then YouTube Music demo
+- play_spotify {"song":"..."} — only if user says Spotify
+- spotify_login {} — only if user says log in to Spotify
 
-AVAILABLE INTENTS:
-- chat: General conversation, greetings, or when you are providing the FINAL summarized answer fetched from a tool.
-- open_app: Opens a system application. Param: {"app": "app_name"}
-- send_whatsapp: Sends a message. Params: {"name": "contact_name", "message": "text"}
-- play_local_music: Plays default garage music locally (no browser). Use ONLY when user says "play music" with no song and no service. Param: {}
-- play_youtube_music: Plays a song on YouTube Music via Puppeteer automation. Param: {"song": "song_name"}
-- play_youtube_search: Plays a song on YouTube via Puppeteer (click/search/play). Param: {"song": "song_name"}
-- play_spotify: Opens Spotify web, optionally logs in, searches and plays. Param: {"song": "song_name"}
-- spotify_login: Log into Spotify web (uses SPOTIFY_EMAIL/SPOTIFY_PASSWORD env if set). Param: {"email": "", "password": ""}
-- browser_action: Low-level Puppeteer control. Params: {"action": "navigate|click|type|scroll|youtube_play|scroll_test|...", ...}
-- browser_scroll_test: Measure page scroll speed. Param: {"url": "https://...", "pixels": 900, "times": 8}
-- browser_navigate: Open URL in automated browser. Param: {"url": "https://..."}
-- browser_click: Click selector or text. Params: {"selector": "..."} or {"text": "..."}
-- browser_type: Type into selector. Params: {"selector": "...", "text": "..."}
-- browser_scroll: Scroll page. Params: {"pixels": 800, "direction": "down", "times": 1}
-- music_control: Control local music playback. Params: {"action": "stop|pause|resume|restart|status|volume_set|volume_up|volume_down|mute|unmute", "level": 50, "amount": 10}
-- volume_control: Adjust Windows system volume 0-100. Params: {"action": "set|up|down|mute|unmute|get", "level": 50, "amount": 10}
-- read_headlines: FETCH & SUMMARIZE news. Use for any quest for current events or news. Param: {"query": "topic"}
-- smart_search: FETCH & SUMMARIZE general information from the web. Use this for "What is...", "Who is...", "Search for..." instead of opening a browser. Param: {"query": "search_term"}
-- web_agent: AUTONOMOUS OS AGENT (screen+mouse). Use for desktop UI tasks. Prefer Puppeteer intents for real browser click/scroll/login. Param: {"task": "full descriptive task instruction"}
-- search_browser: ONLY use this as a LAST RESORT if programmatic fetching fails or if the user explicitly says "open the website".
+OTHER:
+- open_app {"app":"..."}
+- send_whatsapp {"name":"...","message":"...","number":"+91..."} — ALWAYS include phone number when known; WhatsApp searches by NUMBER only (never name) to avoid same-name confusion. Drafts message and asks user to confirm before send.
+- confirm_whatsapp_send {} — user said yes/ok/send after a draft
+- cancel_whatsapp_send {} — user said no/cancel after a draft
+- play_local_music {} — "play music" / "play garage music" (local garage track)
+- daddys_home {} — "wake up daddy's home" / "daddy's home"
+- music_control / volume_control
+- read_headlines {"query":"..."} / smart_search {"query":"..."}  (text only, no browser)
+- chat / joke / intro / qa / cancel_task / web_agent
 
-RESPONSE STYLE:
-- Avoid technical jargon like "Executing tool...".
-- Say: "Here are the latest headlines for [Topic]: ..." or "I've found information on [Term]: ...".
-- If you use 'read_headlines' or 'smart_search', the system will automatically speak the detailed results.
-
-OUTPUT FORMAT:
-Return ONLY a valid JSON object.
-{
-  "intent": "tool_name",
-  "parameters": { "key": "value" }
-}
+Rules: Prefer play_youtube_music for play requests. Prefer search_browser for "search/google in browser". Prefer smart_search for "what is". No markdown.
 """
 
+
 def decide_action(user_input: str, context: str = ""):
-    prompt = f"{SYSTEM_PROMPT}\n\nContext: {context}\nUser: {user_input}\nJSON:"
-    
+    # Keep context tiny for speed
+    ctx = (context or "")[-400:]
+    prompt = f"{SYSTEM_PROMPT}\nContext:{ctx}\nUser:{user_input}\nJSON:"
     try:
         response = llm.invoke(prompt)
-        content = response.content.strip()
-        
+        content = (response.content or "").strip()
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
-            
-        return json.loads(content)
+        # Extract first {...} if model adds chatter
+        if "{" in content and "}" in content:
+            content = content[content.index("{") : content.rindex("}") + 1]
+        data = json.loads(content)
+        if not isinstance(data, dict) or "intent" not in data:
+            raise ValueError("bad shape")
+        data.setdefault("parameters", {})
+        if not isinstance(data["parameters"], dict):
+            data["parameters"] = {}
+        print(f"[LLM Brain] {ROUTER_MODEL} -> {data.get('intent')}")
+        return data
     except Exception as e:
         print(f"[LLM Brain Error] {e}")
-        return {
-            "intent": "search_browser",
-            "parameters": {"query": user_input}
-        }
+        # Safe browser-oriented fallback for ambiguous web-ish input
+        low = user_input.lower()
+        if "play" in low and (
+            "youtube" in low or "yotube" in low or "utube" in low or "yt music" in low
+            or low.startswith("play ") or "play " in low
+        ):
+            # Extract after last "play "
+            song = user_input
+            if "play " in low:
+                song = user_input[low.index("play ") + 5 :].strip()
+            song = re.sub(
+                r"\s+on\s+(?:you\s*tube|youtube|yotube|utube|yt)(?:\s*music)?\s*$",
+                "",
+                song,
+                flags=re.I,
+            ).strip(" .,!?")
+            if song:
+                return {"intent": "play_youtube_music", "parameters": {"song": song}}
+        if "search" in low or "google" in low:
+            return {"intent": "search_browser", "parameters": {"query": user_input}}
+        return {"intent": "chat", "parameters": {"response": ""}}

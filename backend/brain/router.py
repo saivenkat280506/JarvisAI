@@ -3,11 +3,8 @@ router.py — Fast Rule-based Intent Router
 ==========================================
 Routes explicit commands directly to tool intents to avoid LLM latency.
 
-Intent catalogue:
-  chat, send_whatsapp, play_local_music, play_youtube_music,
-  play_youtube_search, play_spotify, open_app,
-  search_browser, cancel_task,
-  news, joke, intro, focus_window
+Intent catalogue includes Puppeteer browser tools (zero LLM latency when matched):
+  play_youtube_music, browser_scroll_test, search_browser, linkedin_browser_demo, ...
 """
 
 import re
@@ -33,6 +30,45 @@ def _strip_wake_prefix(text: str) -> str:
     return cleaned
 
 
+def _split_contact_and_message(rest: str) -> tuple:
+    """
+    Split 'sathish hello from jarvis' into (contact, message).
+    Prefer longest saved-contact match at the start; else first token = contact.
+    """
+    rest = (rest or "").strip().strip("\"'")
+    if not rest:
+        return "", ""
+
+    # Phone number at start (with optional spaces/dashes)
+    phone_m = re.match(r"(\+?\d[\d\s\-()]{7,}\d)\s+(.+)$", rest)
+    if phone_m:
+        num = re.sub(r"\s+", "", phone_m.group(1))
+        return num, phone_m.group(2).strip().strip("\"'")
+
+    # Known contacts (longest match first)
+    contacts = {}
+    try:
+        from executor.automation import _load_whatsapp_contacts
+        contacts = _load_whatsapp_contacts()
+    except Exception:
+        contacts = {}
+    lower = rest.lower()
+    best = ""
+    for name in sorted(contacts.keys(), key=len, reverse=True):
+        if lower == name or lower.startswith(name + " "):
+            if len(name) > len(best):
+                best = name
+    if best:
+        msg = rest[len(best):].strip().strip("\"'")
+        return best, msg
+
+    # Default: first word = contact, remainder = message
+    parts = rest.split(None, 1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1].strip().strip("\"'")
+
+
 def route_command(text: str):
     """
     Analyzes input text and routes it to a specific intent if it's a clear command.
@@ -51,31 +87,142 @@ def route_command(text: str):
     if _GREETING_RE.match(text_clean):
         return "greeting", {}
 
-    # Matches: "open whatsapp and search for vaasavi and send message hi iam jarvis"
-    wa_search_msg = re.search(
-        r"(?:open\s+)?whatsapp\s+(?:and\s+)?search\s+(?:for\s+)?(.+?)\s+(?:and\s+)?send\s+message\s+[\"']?(.+)[\"']?\s*$",
+    # 0b. "Wake up. Daddy's home." — garage music + volume 50 + time-based welcome
+    if re.search(
+        r"wake\s*up\s*[.,!]?\s*daddy'?s?\s*home"
+        r"|daddy'?s?\s*home"
+        r"|wake\s*up[.,]?\s*daddy"
+        r"|daddys?\s*home",
+        text_clean,
+        re.IGNORECASE,
+    ):
+        return "daddys_home", {"volume": 50}
+
+    # ── WhatsApp confirm / cancel — ONLY when a draft is awaiting send ──
+    try:
+        from brain.memory import get_memory
+        _pending_wa = get_memory("pending_whatsapp") or {}
+    except Exception:
+        _pending_wa = {}
+    if isinstance(_pending_wa, dict) and _pending_wa.get("awaiting_confirm"):
+        if re.fullmatch(
+            r"(?:yes|yeah|yep|yup|ok|okay|sure|send|send\s+it|send\s+the\s+message|"
+            r"go\s+ahead|confirm|do\s+it|proceed|please\s+send|green\s+light|"
+            r"yes\s+send(?:\s+it)?|ok\s+send(?:\s+it)?)",
+            text_clean,
+            flags=re.IGNORECASE,
+        ):
+            return "confirm_whatsapp_send", {}
+        if re.fullmatch(
+            r"(?:no|nope|cancel|don'?t|don'?t\s+send|do\s+not\s+send|stop|"
+            r"never\s*mind|nevermind|abort|discard|no\s+send)",
+            text_clean,
+            flags=re.IGNORECASE,
+        ):
+            return "cancel_whatsapp_send", {}
+
+    # Phone number pattern: +91 85199 29108 / 8519929108 / +918519929108
+    _phone = r"(\+?\d[\d\s\-()]{7,}\d)"
+
+    # "send message to +91 85199 29108 hello" / "message +918519929108 hi"
+    msg_num = re.search(
+        rf"(?:send\s+(?:a\s+)?message\s+to|message|whatsapp|text)\s+{_phone}\s+(.+)",
         text,
+        re.IGNORECASE,
+    )
+    if msg_num:
+        return "send_whatsapp", {
+            "number": re.sub(r"\s+", "", msg_num.group(1).strip()),
+            "name": re.sub(r"\s+", "", msg_num.group(1).strip()),
+            "message": msg_num.group(2).strip().strip("\"'"),
+        }
+
+    # "open whatsapp and search for +91... and send message hi"
+    wa_search_msg_num = re.search(
+        rf"(?:open\s+)?whatsapp\s+(?:and\s+)?search\s+(?:for\s+)?{_phone}\s+"
+        r"(?:and\s+)?send\s+(?:a\s+)?message\s+[\"']?(.+)[\"']?\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    if wa_search_msg_num:
+        return "send_whatsapp", {
+            "number": re.sub(r"\s+", "", wa_search_msg_num.group(1).strip()),
+            "name": re.sub(r"\s+", "", wa_search_msg_num.group(1).strip()),
+            "message": wa_search_msg_num.group(2).strip().strip("\"'"),
+        }
+
+    # Matches: "open whatsapp and search for vaasavi and send message hi iam jarvis"
+    # Prefer resolving name→number later; still pass name for contact lookup
+    wa_search_msg = re.search(
+        r"(?:open\s+)?whatsapp\s+(?:and\s+)?search\s+(?:for\s+)?(.+?)\s+(?:and\s+)?send\s+(?:a\s+)?message\s+[\"']?(.+)[\"']?\s*$",
+        text,
+        re.IGNORECASE,
     )
     if wa_search_msg:
-        return "send_whatsapp", {
-            "name": wa_search_msg.group(1).strip(),
-            "message": wa_search_msg.group(2).strip().strip("\"'")
-        }
+        target = wa_search_msg.group(1).strip()
+        params = {"message": wa_search_msg.group(2).strip().strip("\"'")}
+        if re.search(r"\d{8,}", target):
+            params["number"] = re.sub(r"\s+", "", target)
+            params["name"] = params["number"]
+        else:
+            params["name"] = target
+        return "send_whatsapp", params
 
-    # Matches: "open whatsapp and search [for] laxman", "whatsapp search [for] laxman"
-    wa_search = re.search(r"(?:open\s+)?whatsapp\s+(?:and\s+)?search\s+(?:for\s+)?([a-zA-Z\s]+)", text)
+    # Matches: "open whatsapp and search [for] +91..." / name
+    wa_search = re.search(
+        r"(?:open\s+)?whatsapp\s+(?:and\s+)?search\s+(?:for\s+)?(.+)$",
+        text,
+        re.IGNORECASE,
+    )
     if wa_search:
-        return "send_whatsapp", {
-            "name": wa_search.group(1).strip(),
-            "message": ""
-        }
+        target = wa_search.group(1).strip().rstrip(".!?")
+        # strip trailing "and send..." already handled above
+        if re.search(r"\d{8,}", target):
+            num = re.sub(r"\s+", "", target)
+            return "send_whatsapp", {"number": num, "name": num, "message": ""}
+        return "send_whatsapp", {"name": target, "message": ""}
 
-    # Matches: "send message to Rahul hello", "message Rahul hello"
-    msg_match = re.search(r"(?:send message to|message)\s+([a-zA-Z\s]+?)\s+(.+)", text)
+    # "send message to sathish: hello" / "whatsapp message to X: body"
+    msg_colon = re.search(
+        r"(?:whatsapp\s+)?(?:send\s+)?message\s+to\s+(.+?)\s*[:\-]\s*(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if msg_colon:
+        target = msg_colon.group(1).strip()
+        body = msg_colon.group(2).strip().strip("\"'")
+        if re.search(r"\d{8,}", target):
+            num = re.sub(r"\s+", "", target)
+            return "send_whatsapp", {"number": num, "name": num, "message": body}
+        return "send_whatsapp", {"name": target, "message": body}
+
+    # "send message to Rahul hello" / "message Rahul hello"
+    msg_match = re.search(
+        r"(?:send\s+(?:a\s+)?message\s+to|message)\s+(.+)$",
+        text,
+        re.IGNORECASE,
+    )
     if msg_match:
+        contact, body = _split_contact_and_message(msg_match.group(1))
+        if contact and body:
+            params = {"name": contact, "message": body}
+            if re.search(r"\d{8,}", contact):
+                params["number"] = re.sub(r"\s+", "", contact)
+            return "send_whatsapp", params
+
+    # "send hi to sathish" / "send hello to sathish on whatsapp"
+    # (message first, then "to" name) — must NOT match "send message to …"
+    wa_to_name = re.search(
+        r"^(?:send|text)\s+(?!message\b)[\"']?(.+?)[\"']?\s+to\s+"
+        r"([A-Za-z][A-Za-z\s]*?)"
+        r"(?:\s+on\s+whatsapp)?$",
+        text_clean,
+        re.IGNORECASE,
+    )
+    if wa_to_name:
         return "send_whatsapp", {
-            "name": msg_match.group(1).strip(),
-            "message": msg_match.group(2).strip()
+            "name": wa_to_name.group(2).strip(),
+            "message": wa_to_name.group(1).strip().strip("\"'"),
         }
 
     # 1b. Music control (transport + music-specific volume — before system volume)
@@ -165,11 +312,27 @@ def route_command(text: str):
             return "volume_control", {"action": "get"}
 
     # 2. Music playback (local / spotify / youtube music / youtube search)
+    # Default local garage track (project folder) — must run BEFORE generic "play <song>"
     local_music_cmds = {
         "play music", "play the music", "play some music", "start music", "put on music",
+        "play garage music", "play the garage music", "play garage", "garage music",
+        "start garage music", "put on garage music", "play local music",
+        "play my music", "play default music",
     }
-    if text_clean in local_music_cmds:
-        return "play_local_music", {}
+    if text_clean in local_music_cmds or re.fullmatch(
+        r"(?:can\s+you\s+(?:just\s+)?|please\s+|just\s+)?play\s+(?:the\s+|some\s+|my\s+)?"
+        r"(?:garage\s+)?music(?:\s+please)?",
+        text_clean,
+        re.IGNORECASE,
+    ):
+        return "play_local_music", {"volume": 50}
+
+    if re.search(
+        r"\b(?:play|start|put\s+on)\s+(?:the\s+)?garage(?:\s+music)?\b",
+        text_clean,
+        re.IGNORECASE,
+    ):
+        return "play_local_music", {"volume": 50}
 
     spotify_match = re.search(
         r"(?:play\s+(.+?)\s+on\s+spotify|spotify\s+(?:play\s+)?(.+)|play\s+(.+?)\s+(?:from|using)\s+spotify)",
@@ -180,23 +343,60 @@ def route_command(text: str):
         if song:
             return "play_spotify", {"song": song}
 
+    # YouTube / YouTube Music — tolerate STT typos: yotube, utube, you tube, yt music
+    _YT = r"(?:you\s*tube|youtube|yotube|utube|yt)"
+    _YTM = rf"(?:{_YT}\s*music|yt\s*music|y\s*t\s*music)"
+
     ytm_match = re.search(
-        r"play\s+(.+?)\s+on\s+(?:youtube\s+music|yt\s+music)|(?:youtube\s+music|yt\s+music)\s+(?:play\s+)?(.+)",
+        rf"(?:can\s+you\s+(?:just\s+)?|please\s+|just\s+)?play\s+(.+?)\s+on\s+{_YTM}"
+        rf"|{_YTM}\s+(?:play\s+)?(.+)"
+        rf"|play\s+(.+?)\s+(?:from|using|via)\s+{_YTM}",
         text,
+        re.IGNORECASE,
     )
     if ytm_match:
-        song = (ytm_match.group(1) or ytm_match.group(2) or "").strip()
-        if song:
+        song = (ytm_match.group(1) or ytm_match.group(2) or ytm_match.group(3) or "").strip()
+        song = re.sub(r"\s+(?:please|now|for\s+me)$", "", song, flags=re.I).strip(" .,!?\"'")
+        # Strip accidental platform words left in the capture
+        song = re.sub(rf"\s+on\s+{_YTM}$", "", song, flags=re.I).strip()
+        if song and song.lower() not in {"music", "some music", "a song"}:
             return "play_youtube_music", {"song": song}
 
     yt_search_match = re.search(
-        r"play\s+(.+?)\s+on\s+youtube|youtube\s+(?:play\s+)?(.+)|play\s+(.+?)\s+(?:from|using)\s+youtube",
+        rf"(?:can\s+you\s+(?:just\s+)?|please\s+|just\s+)?play\s+(.+?)\s+on\s+{_YT}(?!\s*music)"
+        rf"|{_YT}(?!\s*music)\s+(?:play\s+)?(.+)"
+        rf"|play\s+(.+?)\s+(?:from|using|via)\s+{_YT}(?!\s*music)",
         text,
+        re.IGNORECASE,
     )
     if yt_search_match:
         song = (yt_search_match.group(1) or yt_search_match.group(2) or yt_search_match.group(3) or "").strip()
+        song = re.sub(r"\s+(?:please|now|for\s+me)$", "", song, flags=re.I).strip(" .,!?\"'")
         if song and song.lower() not in {"music", "some music"}:
-            return "play_youtube_search", {"song": song}
+            # Prefer Music service for song-like queries
+            return "play_youtube_music", {"song": song}
+
+    # Generic "play <song>" / "can you just play <song>" -> YouTube Music via Puppeteer
+    generic_play = re.search(
+        r"^(?:can\s+you\s+(?:just\s+)?|please\s+|just\s+)?play\s+(.+)$",
+        text_clean,
+        re.IGNORECASE,
+    )
+    if generic_play:
+        song = generic_play.group(1).strip()
+        # Drop trailing platform words if STT mangled "on youtube music"
+        song = re.sub(
+            rf"\s+on\s+(?:{_YTM}|{_YT}|spotify)\s*$",
+            "",
+            song,
+            flags=re.I,
+        ).strip(" .,!?\"'")
+        blocked = {
+            "music", "some music", "the music", "a song", "something",
+            "notepad", "chrome", "browser", "spotify", "youtube",
+        }
+        if song and song.lower() not in blocked and len(song) >= 2:
+            return "play_youtube_music", {"song": song}
 
     # 4. Intent: open_app
     # Matches: "open chrome", "open spotify"
@@ -207,12 +407,16 @@ def route_command(text: str):
         if len(app_name.split()) <= 3 and " and " not in app_name:
             return "open_app", {"app": app_name}
 
-    # 4b. Intent: time
-    if re.search(r"what(?:'s| is)\s+(?:the\s+)?time\b", text):
+    # 4b. Intent: time — before news (LLM often confuses "right now" with headlines)
+    if re.search(
+        r"\b(?:what(?:'s|\s+is)\s+(?:the\s+)?time|what\s+time\s+is\s+it|current\s+time|tell\s+me\s+the\s+time)\b",
+        text,
+        re.IGNORECASE,
+    ):
         return "time", {}
 
     # 5. Intent: news / headlines (must be checked BEFORE search_browser)
-    if any(k in text for k in ["news", "headlines", "latest news", "what's happening", "top stories", "news summary", "headlines summary", "read summary", "summary"]):
+    if any(k in text for k in ["news", "headlines", "latest news", "what's happening", "top stories", "news summary", "headlines summary", "read summary"]):
         return "news", {}
 
     # 6. Intent: search_browser
@@ -223,7 +427,8 @@ def route_command(text: str):
 
     # 7. Intent: cancel_task
     # Matches: "stop", "cancel", "stop music", "cancel playing"
-    if any(k in text for k in ["stop", "cancel", "shut up", "be quiet"]):
+    # Uses word-boundary match so "bus stop" or "don't stop the music" don't trigger
+    if re.search(r"^(?:stop|cancel|shut\s+up|be\s+quiet)\b", text_clean):
         # Determine what to cancel
         if any(w in text for w in ["music", "song", "audio", "playback"]):
             return "cancel_task", {"task_type": "music"}
@@ -236,7 +441,8 @@ def route_command(text: str):
             return "cancel_task", {"task_type": "all"}
 
     # 8. Intent: joke
-    if any(k in text for k in ["joke", "make me laugh", "say something funny", "tell me a joke"]):
+    # Word-boundary match so "joker" or "no joke" don't trigger
+    if re.search(r"\btell\s+me\s+a\s+joke\b|\bmake\s+me\s+laugh\b|\bsay\s+something\s+funny\b|^joke$", text_clean):
         return "joke", {"style": "short, witty"}
 
     # 9. Intent: qa (General Knowledge)
@@ -256,6 +462,13 @@ def route_command(text: str):
         return "focus_window", {}
 
     # 10a. Puppeteer browser automation shortcuts
+    # LinkedIn one-shot demo: scroll → Spotify login → YouTube Back in Black
+    if re.search(
+        r"linkedin\s*(browser\s*)?demo|browser\s*demo|demo\s*browser|"
+        r"full\s*browser\s*demo|puppeteer\s*demo|run\s*the\s*demo",
+        text,
+    ):
+        return "linkedin_browser_demo", {}
     if re.search(r"\b(log\s*in|login|sign\s*in)\b.*\bspotify\b|\bspotify\b.*\b(log\s*in|login|sign\s*in)\b", text):
         return "spotify_login", {}
     if re.search(r"scroll\s*(speed\s*)?test|test\s*scroll", text):

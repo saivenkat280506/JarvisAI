@@ -4,7 +4,14 @@ context_manager.py — Contextual Intelligence
 Combines current input with memory to create a context string for the LLM.
 """
 
+import re
 from brain.memory import get_memory
+
+
+def _replace_whole_word(text: str, word: str, replacement: str) -> str:
+    """Replace *word* only when it appears as a whole word (not inside other words)."""
+    return re.sub(rf"\b{re.escape(word)}\b", replacement, text, flags=re.IGNORECASE)
+
 
 def resolve_pronouns(text: str):
     """
@@ -13,23 +20,24 @@ def resolve_pronouns(text: str):
     """
     text_lower = text.lower()
     resolved_params = {}
-    
+
     # Resolve "it", "again", "that song", "play it" -> last_song
-    if any(k in text_lower for k in ["it", "again", "that song", "the same"]):
+    # Use word-boundary check so "it" doesn't match inside "write", "bitcoin", etc.
+    if re.search(r"\b(?:it|again|that song|the same)\b", text_lower):
         last_song = get_memory("last_song")
         if last_song:
             resolved_params["song"] = last_song
-            # Optionally replace text for LLM context
-            text = text.replace("it", f"'{last_song}'")
-            text = text.replace("again", f"'{last_song}' again")
-    
+            text = _replace_whole_word(text, "it", f"'{last_song}'")
+            text = _replace_whole_word(text, "again", f"'{last_song}' again")
+
     # Resolve "him", "her", "that person" -> last_contact
-    if any(k in text_lower for k in ["him", "her", "that person"]):
+    # Use word-boundary check so "him" doesn't match "thimble", "her" doesn't match "where"/"other"
+    if re.search(r"\b(?:him|her|that person)\b", text_lower):
         last_contact = get_memory("last_contact")
         if last_contact:
             resolved_params["name"] = last_contact
-            text = text.replace("him", f"'{last_contact}'")
-            text = text.replace("her", f"'{last_contact}'")
+            text = _replace_whole_word(text, "him", f"'{last_contact}'")
+            text = _replace_whole_word(text, "her", f"'{last_contact}'")
     
     return text, resolved_params
 

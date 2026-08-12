@@ -32,13 +32,20 @@ async def speak_hybrid(text: str, is_smart: bool = False, response_id: str = Non
 
     speak_epoch = flags.speak_epoch
 
-    if _is_speaking:
+    # Garage / home-arrival lines must never be silently dropped
+    force_line = bool(response_id and ("garage_line" in str(response_id) or "daddys" in str(response_id)))
+
+    if _is_speaking and not force_line:
         print(f"[Hybrid TTS] Blocked: Already speaking. Active response ID: {_current_response_id}")
         return
 
-    if response_id and response_id == _current_response_id:
+    if response_id and response_id == _current_response_id and not force_line:
         print(f"[Hybrid TTS] Blocked: Duplicate response ID {response_id}")
         return
+
+    if force_line and _is_speaking:
+        print("[Hybrid TTS] Forcing garage dialogue — stopping previous speech first")
+        force_stop_all_tts()
 
     from brain.settings import is_muted
     if is_muted():
@@ -61,13 +68,11 @@ async def speak_hybrid(text: str, is_smart: bool = False, response_id: str = Non
                 return
             pocket_speak(clean_text)
 
+        # Run TTS off the event loop so HTTP/WS stay responsive while audio streams
         await asyncio.to_thread(_run_pocket_speak)
 
     except Exception as e:
         print(f"[Hybrid TTS] Execution failed: {e}")
     finally:
-        if flags.speak_epoch != speak_epoch:
-            _is_speaking = False
-            _current_response_id = None
-        else:
-            _is_speaking = False
+        _is_speaking = False
+        _current_response_id = None

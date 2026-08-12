@@ -37,9 +37,7 @@ _PHRASE_FIXES: list[tuple[str, str]] = [
     (r"\bhang\s+up\b", "end the call"),
     (r"\bstop\s+listening\b", "stop listening"),
     (r"\bhey\s+jervis\b", "hey jarvis"),
-    (r"\bhey\s+jarvis\b", "hey jarvis"),
     (r"\bjervis\b", "jarvis"),
-    (r"\bjarvis\b", "jarvis"),
     # Phonetic mishearings for Q&A
     (r"\bwhat is nice in a mind\b", "what is niacinamide"),
     (r"\bwhat is nice inamide\b", "what is niacinamide"),

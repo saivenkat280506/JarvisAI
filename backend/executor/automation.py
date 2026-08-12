@@ -8,6 +8,8 @@ iterative search logging and summarization via Notepad.
 
 import subprocess
 import os
+import re
+import json
 import webbrowser
 import urllib.parse
 import time
@@ -22,10 +24,15 @@ try:
     import numpy as np
     from mss import mss
     import threading
-    import pyperclip
     HAS_RECORDING_DEPS = True
 except ImportError:
     HAS_RECORDING_DEPS = False
+
+try:
+    import pyperclip
+    HAS_CLIPBOARD = True
+except ImportError:
+    HAS_CLIPBOARD = False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCREEN RECORDER COMPONENT
@@ -127,53 +134,243 @@ def open_whatsapp():
     except Exception as e:
         return False, f"Failed to open WhatsApp: {str(e)}"
 
-def send_whatsapp_message(name, message):
-    """Sends a WhatsApp message using pyautogui while recording the screen process."""
-    # Setup record directory
+
+# ── WhatsApp helpers: always search by PHONE NUMBER (never name) ──────────────
+
+_CONTACTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_contacts.json")
+
+
+def _load_whatsapp_contacts() -> dict:
+    """name(lower) -> E.164-ish phone number string."""
+    try:
+        if os.path.exists(_CONTACTS_PATH):
+            with open(_CONTACTS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {str(k).strip().lower(): str(v).strip() for k, v in data.items() if v}
+    except Exception as e:
+        print(f"[WhatsApp] Failed to load contacts: {e}")
+    return {}
+
+
+def normalize_phone_number(value: str) -> str:
+    """Keep leading + and digits only. Strip spaces/dashes/parens."""
+    if not value:
+        return ""
+    raw = str(value).strip()
+    # Already mostly numeric?
+    has_plus = raw.lstrip().startswith("+")
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return ""
+    return ("+" + digits) if has_plus or len(digits) >= 10 else digits
+
+
+def looks_like_phone_number(value: str) -> bool:
+    if not value:
+        return False
+    digits = re.sub(r"\D", "", str(value))
+    return len(digits) >= 8
+
+
+def resolve_whatsapp_number(name_or_number: str, number: str = "") -> tuple:
+    """
+    Resolve a WhatsApp search target to a phone number.
+    ALWAYS prefers an explicit number over a contact name to avoid same-name confusion.
+
+    Returns: (ok: bool, phone: str, label: str, error: str)
+    """
+    explicit = normalize_phone_number(number) if number else ""
+    if explicit and looks_like_phone_number(explicit):
+        label = (name_or_number or explicit).strip() or explicit
+        return True, explicit, label, ""
+
+    target = (name_or_number or "").strip()
+    if not target:
+        return False, "", "", "No contact or phone number provided."
+
+    if looks_like_phone_number(target):
+        phone = normalize_phone_number(target)
+        return True, phone, phone, ""
+
+    contacts = _load_whatsapp_contacts()
+    key = target.lower()
+    if key in contacts:
+        phone = normalize_phone_number(contacts[key])
+        if looks_like_phone_number(phone):
+            return True, phone, target, ""
+
+    # Partial name match (unique only)
+    matches = [(n, p) for n, p in contacts.items() if key in n or n in key]
+    if len(matches) == 1:
+        phone = normalize_phone_number(matches[0][1])
+        if looks_like_phone_number(phone):
+            return True, phone, matches[0][0], ""
+    if len(matches) > 1:
+        names = ", ".join(m[0] for m in matches[:5])
+        return False, "", target, (
+            f"Multiple contacts match '{target}' ({names}). "
+            "Please provide the full phone number so I search by number only."
+        )
+
+    return False, "", target, (
+        f"I do not have a saved phone number for '{target}'. "
+        "Please give the full number (with country code) so I can search WhatsApp by number."
+    )
+
+
+def _paste_text(text: str):
+    """Paste via clipboard — reliable for +phone numbers and special chars."""
+    if HAS_CLIPBOARD:
+        try:
+            pyperclip.copy(text)
+            time.sleep(0.15)
+            pyautogui.hotkey("ctrl", "v")
+            return
+        except Exception as e:
+            print(f"[WhatsApp] Clipboard paste failed, typing fallback: {e}")
+    # Fallback: type digit-by-digit (pyautogui.write struggles with '+')
+    for ch in text:
+        if ch == "+":
+            pyautogui.hotkey("shift", "=")
+        else:
+            pyautogui.write(ch, interval=0.03)
+        time.sleep(0.02)
+
+
+def _focus_whatsapp_search_and_type_number(phone: str):
+    """
+    Open/focus WhatsApp search bar and enter the PHONE NUMBER only.
+    Never types a contact name — avoids same-name collisions.
+    """
+    # Ctrl+F opens search in WhatsApp Desktop
+    pyautogui.hotkey("ctrl", "f")
+    time.sleep(0.8)
+    pyautogui.hotkey("ctrl", "a")
+    time.sleep(0.2)
+    pyautogui.press("backspace")
+    time.sleep(0.2)
+    _paste_text(phone)
+    time.sleep(2.0)
+    # Open first search result (the number match)
+    pyautogui.press("enter")
+    time.sleep(1.5)
+    # Ensure message compose box is focused (Tab / click chat area)
+    pyautogui.press("escape")  # close search panel if still open
+    time.sleep(0.4)
+    # Click roughly into message input area (bottom center of primary screen)
+    try:
+        sw, sh = pyautogui.size()
+        pyautogui.click(sw // 2, int(sh * 0.92))
+        time.sleep(0.4)
+    except Exception:
+        pass
+
+
+def prepare_whatsapp_message(name_or_number: str, message: str, number: str = ""):
+    """
+    Open WhatsApp → search by PHONE NUMBER → open chat → type message.
+    Does NOT press Enter / send. Caller must confirm before send.
+    """
+    ok, phone, label, err = resolve_whatsapp_number(name_or_number, number)
+    if not ok:
+        return False, err
+
     project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     recordings_dir = os.path.join(project_dir, "whatsapp recordings")
     os.makedirs(recordings_dir, exist_ok=True)
-    
-    # Clean task name for filename safety
-    safe_name = "".join([c if c.isalnum() or c in ("-", "_") else "_" for c in name])
-    video_path = os.path.join(recordings_dir, f"send_message_to_{safe_name}.mp4")
-    
-    # Start screen recording
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (label or phone))
+    video_path = os.path.join(recordings_dir, f"draft_message_to_{safe}.mp4")
+
     recorder = ScreenRecorder(video_path, fps=8.0)
     recorder.start()
-    
     success, msg = False, ""
     try:
         open_whatsapp()
-        time.sleep(4)  # Wait for app to load and focus
-        
-        # WhatsApp Desktop UI Search
-        pyautogui.hotkey('ctrl', 'f')
-        time.sleep(1)
-        # Clear any previous search text by selecting all before typing
-        pyautogui.hotkey('ctrl', 'a')
-        time.sleep(0.3)
-        pyautogui.write(name, interval=0.08)
-        time.sleep(2)
-        pyautogui.press('enter')
-        time.sleep(1.5)
-        
-        # Write Message
+        time.sleep(4)
+
+        print(f"[WhatsApp] Searching by NUMBER only: {phone} (label={label})")
+        _focus_whatsapp_search_and_type_number(phone)
+
         if message and message.strip():
-            pyautogui.write(message, interval=0.02)
-            time.sleep(0.5)
-            pyautogui.press('enter')
-            success, msg = True, f"Message sent to {name}."
+            _paste_text(message.strip())
+            time.sleep(0.4)
+            # Intentionally do NOT press Enter — wait for user confirmation
+            success, msg = True, (
+                f"Draft ready for {label} ({phone}). "
+                f"Message typed in the chat: \"{message.strip()}\". "
+                "Should I send it? Say yes, ok, or send to deliver — or no to cancel."
+            )
         else:
-            success, msg = True, f"WhatsApp opened and searched for {name}."
+            success, msg = True, (
+                f"Opened WhatsApp chat for {label} by number {phone}. "
+                "No message body was provided."
+            )
     except Exception as e:
-        success, msg = False, f"Failed to send WhatsApp message: {str(e)}"
+        success, msg = False, f"Failed to prepare WhatsApp message: {str(e)}"
     finally:
-        # Stop screen recording
-        time.sleep(2.0)
+        time.sleep(1.5)
         recorder.stop()
-        
+
     return success, msg
+
+
+def confirm_send_whatsapp_message():
+    """Press Enter in the focused WhatsApp compose box to send the drafted message."""
+    try:
+        open_whatsapp()
+        time.sleep(1.0)
+        # Refocus message box
+        try:
+            sw, sh = pyautogui.size()
+            pyautogui.click(sw // 2, int(sh * 0.92))
+            time.sleep(0.3)
+        except Exception:
+            pass
+        pyautogui.press("enter")
+        time.sleep(0.5)
+        return True, "Message sent, sir."
+    except Exception as e:
+        return False, f"Failed to send WhatsApp message: {str(e)}"
+
+
+def cancel_whatsapp_draft():
+    """Clear the drafted message text in the compose box without sending."""
+    try:
+        open_whatsapp()
+        time.sleep(0.8)
+        try:
+            sw, sh = pyautogui.size()
+            pyautogui.click(sw // 2, int(sh * 0.92))
+            time.sleep(0.3)
+        except Exception:
+            pass
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.15)
+        pyautogui.press("backspace")
+        return True, "Draft cancelled. Message was not sent, sir."
+    except Exception as e:
+        return False, f"Could not clear draft: {str(e)}"
+
+
+def send_whatsapp_message(name, message, number: str = "", auto_send: bool = False):
+    """
+    WhatsApp messaging entrypoint.
+
+    Default (auto_send=False): search by NUMBER, open chat, type message, DO NOT send.
+    auto_send=True: legacy immediate send (discouraged).
+    """
+    if not auto_send:
+        return prepare_whatsapp_message(name, message, number=number)
+
+    ok, phone, label, err = resolve_whatsapp_number(name, number)
+    if not ok:
+        return False, err
+
+    success, msg = prepare_whatsapp_message(label, message, number=phone)
+    if not success:
+        return False, msg
+    return confirm_send_whatsapp_message()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SEARCH & LOGGING AUTOMATION FLOWS

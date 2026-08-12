@@ -80,4 +80,6 @@ whatsapp recordings/
 backend/tts/voices/*.wav
 !backend/tts/voices/jarvis_voice_clean.wav
 browser-automation/user-data/
+browser-automation/chrome-profile-data/
+browser-automation/puppeteer-server.log
 browser-automation/node_modules/

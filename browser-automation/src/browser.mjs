@@ -1,21 +1,230 @@
 /**
- * Persistent Puppeteer browser singleton for JARVIS.
- * Uses a dedicated user-data dir so logins/cookies survive restarts.
+ * JARVIS browser launcher.
+ *
+ * Default: dedicated clone under chrome-profile-data/ so your daily Chrome
+ * can stay open (no SingletonLock fight on %LOCALAPPDATA%\...\User Data).
+ *
+ * Env:
+ *   CHROME_USE_REAL_PROFILE=0     (default) use chrome-profile-data or user-data
+ *   CHROME_USE_REAL_PROFILE=1     use live Chrome User Data (requires Chrome closed
+ *                                 or CHROME_KILL_BEFORE_LAUNCH=1)
+ *   CHROME_PROFILE_DIRECTORY      default Default
+ *   CHROME_USER_DATA              override user-data path (real or clone)
+ *   CHROME_KILL_BEFORE_LAUNCH=1   kill chrome.exe for the target profile before open
+ *   CHROME_DEBUG_PORT=9222        try attach first if Chrome already debugging
+ *   CHROME_FALLBACK_ON_LOCK=1     (default) if real profile stays locked, use clone
  */
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import puppeteer from "puppeteer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const USER_DATA = path.join(ROOT, "user-data");
+const CLONE_USER_DATA = path.join(ROOT, "chrome-profile-data");
+const FALLBACK_USER_DATA = path.join(ROOT, "user-data");
 
 let browser = null;
 let page = null;
+let launchMeta = { mode: "unknown", userDataDir: null, profile: null };
+
+function chromeExe() {
+  const candidates = [
+    process.env.CHROME_PATH,
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    path.join(os.homedir(), "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function realChromeUserData() {
+  // Only the true daily profile — do not honor CHROME_USER_DATA here when it
+  // points at our clone (that path is handled separately).
+  return (
+    process.env.CHROME_REAL_USER_DATA ||
+    path.join(os.homedir(), "AppData", "Local", "Google", "Chrome", "User Data")
+  );
+}
+
+function isolatedUserData() {
+  const override = process.env.CHROME_USER_DATA;
+  if (override) {
+    const norm = path.resolve(override);
+    const real = path.resolve(realChromeUserData());
+    // If someone points CHROME_USER_DATA at the live profile while not in
+    // real-profile mode, still prefer the clone so we don't lock daily Chrome.
+    if (norm.toLowerCase() !== real.toLowerCase()) {
+      return norm;
+    }
+  }
+  if (fs.existsSync(path.join(CLONE_USER_DATA, "Default"))) {
+    return CLONE_USER_DATA;
+  }
+  return FALLBACK_USER_DATA;
+}
+
+function wantsRealProfile() {
+  // Default OFF — real profile + open Chrome is the #1 failure mode.
+  const v = (process.env.CHROME_USE_REAL_PROFILE || "0").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+function clearProfileLocks(userDataDir) {
+  if (!userDataDir) return;
+  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]) {
+    const p = path.join(userDataDir, name);
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {
+      /* ignore */
+    }
+  }
+  // Profile-level lock files
+  const profileDir = process.env.CHROME_PROFILE_DIRECTORY || "Default";
+  for (const name of ["lockfile", "SingletonLock"]) {
+    const p = path.join(userDataDir, profileDir, name);
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function sleepMs(ms) {
+  spawnSync(process.platform === "win32" ? "ping" : "sleep",
+    process.platform === "win32" ? ["127.0.0.1", "-n", String(Math.max(2, Math.ceil(ms / 1000) + 1))] : [String(ms / 1000)],
+    { windowsHide: true, shell: false }
+  );
+}
+
+/**
+ * Kill Chrome processes that hold `userDataDir`.
+ * When `userDataDir` is the live profile (or killAll), kills all chrome.exe.
+ * When it is our clone, only kills chrome instances whose command line mentions that path
+ * so the user's daily Chrome stays open.
+ */
+function killChromeProcesses(userDataDir = null, { forceAll = false } = {}) {
+  const target = userDataDir || isolatedUserData();
+  const real = realChromeUserData();
+  const isReal =
+    forceAll ||
+    path.resolve(target).toLowerCase() === path.resolve(real).toLowerCase();
+
+  if (process.platform === "win32") {
+    if (isReal) {
+      spawnSync("taskkill", ["/F", "/IM", "chrome.exe", "/T"], {
+        windowsHide: true,
+        shell: false,
+      });
+    } else {
+      // Only chrome instances launched against this user-data dir
+      const needle = target.replace(/'/g, "''");
+      const ps = [
+        `$needle = '${needle}';`,
+        `Get-CimInstance Win32_Process -Filter "name='chrome.exe'" -ErrorAction SilentlyContinue |`,
+        `  Where-Object { $_.CommandLine -and ($_.CommandLine -like ('*' + $needle + '*')) } |`,
+        `  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ].join(" ");
+      spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
+        windowsHide: true,
+        shell: false,
+      });
+      // Also kill headless/puppeteer leftovers that used the clone path via --user-data-dir
+      spawnSync("taskkill", ["/F", "/IM", "chrome.exe", "/FI", `WINDOWTITLE eq *jarvis*`], {
+        windowsHide: true,
+        shell: false,
+      });
+    }
+    sleepMs(2000);
+  } else {
+    spawnSync("pkill", ["-f", isReal ? "chrome" : target], { shell: false });
+    sleepMs(1000);
+  }
+  clearProfileLocks(target);
+  if (!isReal) clearProfileLocks(CLONE_USER_DATA);
+}
+
+async function tryConnectDebugPort() {
+  const port = process.env.CHROME_DEBUG_PORT || "9222";
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    const b = await puppeteer.connect({
+      browserURL: url,
+      defaultViewport: null,
+    });
+    console.log(`[browser] Connected to existing Chrome on ${url}`);
+    launchMeta = {
+      mode: "chrome-debug-attach",
+      userDataDir: realChromeUserData(),
+      profile: process.env.CHROME_PROFILE_DIRECTORY || "Default",
+    };
+    return b;
+  } catch {
+    return null;
+  }
+}
 
 export function getUserDataDir() {
-  return USER_DATA;
+  return launchMeta.userDataDir || isolatedUserData();
+}
+
+async function launchWithUserData(userDataDir, { headless, useReal, profileDir }) {
+  const exe = chromeExe();
+  const winW = Number(process.env.CHROME_WINDOW_WIDTH || 1280);
+  const winH = Number(process.env.CHROME_WINDOW_HEIGHT || 800);
+  const args = [
+    `--window-size=${winW},${winH}`,
+    "--window-position=80,60",
+    "--disable-blink-features=AutomationControlled",
+    "--no-default-browser-check",
+    "--disable-infobars",
+    "--autoplay-policy=no-user-gesture-required",
+    "--no-first-run",
+    "--password-store=basic",
+    "--disable-features=MediaRouter,TranslateUI",
+    "--use-fake-ui-for-media-stream",
+    // Keep media playing when window is not focused
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+  ];
+  if (useReal || fs.existsSync(path.join(userDataDir, profileDir))) {
+    args.push(`--profile-directory=${profileDir}`);
+  }
+
+  launchMeta = {
+    mode: useReal ? "chrome-real-profile" : "chrome-cloned-or-isolated",
+    userDataDir,
+    profile: profileDir,
+  };
+
+  console.log(
+    `[browser] Launch mode=${launchMeta.mode} profile=${profileDir} data=${userDataDir} window=${winW}x${winH}`
+  );
+
+  const launchOpts = {
+    headless: headless || process.env.PUPPETEER_HEADLESS === "1",
+    defaultViewport: { width: winW, height: winH, deviceScaleFactor: 1 },
+    userDataDir,
+    args,
+    ignoreDefaultArgs: ["--enable-automation"],
+  };
+  if (exe) launchOpts.executablePath = exe;
+  else launchOpts.channel = "chrome";
+
+  return puppeteer.launch(launchOpts);
+}
+
+function isLockError(err) {
+  const msg = String(err?.message || err);
+  return /already running|in use|SingletonLock|userDataDir|profile is/i.test(msg);
 }
 
 export async function ensureBrowser({ headless = false } = {}) {
@@ -27,31 +236,132 @@ export async function ensureBrowser({ headless = false } = {}) {
     return { browser, page };
   }
 
-  fs.mkdirSync(USER_DATA, { recursive: true });
+  // 1) Prefer attach if user already started Chrome with --remote-debugging-port
+  browser = await tryConnectDebugPort();
 
-  browser = await puppeteer.launch({
-    headless,
-    defaultViewport: { width: 1400, height: 900 },
-    userDataDir: USER_DATA,
-    args: [
-      "--start-maximized",
-      "--disable-blink-features=AutomationControlled",
-      "--no-default-browser-check",
-      "--disable-infobars",
-      "--autoplay-policy=no-user-gesture-required",
-    ],
-    ignoreDefaultArgs: ["--enable-automation"],
-  });
+  if (!browser) {
+    const useReal = wantsRealProfile();
+    const profileDir = process.env.CHROME_PROFILE_DIRECTORY || "Default";
+    const killBefore =
+      process.env.CHROME_KILL_BEFORE_LAUNCH === "1" || useReal;
+    const fallbackOnLock =
+      (process.env.CHROME_FALLBACK_ON_LOCK || "1").trim() !== "0";
+
+    let userDataDir = useReal ? realChromeUserData() : isolatedUserData();
+    let tryingReal = useReal;
+
+    // Ensure target dir exists for clone mode
+    if (!tryingReal) {
+      try {
+        fs.mkdirSync(path.join(userDataDir, profileDir), { recursive: true });
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (killBefore) {
+      console.log("[browser] Clearing Chrome locks for automation profile…");
+      killChromeProcesses(userDataDir, { forceAll: tryingReal });
+    } else {
+      clearProfileLocks(userDataDir);
+    }
+
+    const attempt = async (dir, real) => {
+      return launchWithUserData(dir, {
+        headless,
+        useReal: real,
+        profileDir,
+      });
+    };
+
+    try {
+      browser = await attempt(userDataDir, tryingReal);
+      console.log("[browser] Launched OK");
+    } catch (err) {
+      console.error("[browser] Launch error:", String(err?.message || err));
+      if (!isLockError(err)) throw err;
+
+      console.warn("[browser] Profile locked — killing target Chrome and retrying…");
+      killChromeProcesses(userDataDir, { forceAll: tryingReal });
+      clearProfileLocks(userDataDir);
+      sleepMs(2500);
+
+      try {
+        browser = await attempt(userDataDir, tryingReal);
+        console.log("[browser] Launched OK after retry");
+      } catch (err2) {
+        // Real profile still locked (user Chrome open / kill blocked) → clone
+        if (tryingReal && fallbackOnLock) {
+          const cloneDir = isolatedUserData();
+          console.warn(
+            `[browser] Real profile still locked. Falling back to isolated profile:\n  ${cloneDir}`
+          );
+          killChromeProcesses(cloneDir, { forceAll: false });
+          clearProfileLocks(cloneDir);
+          try {
+            fs.mkdirSync(path.join(cloneDir, profileDir), { recursive: true });
+          } catch {
+            /* ignore */
+          }
+          browser = await attempt(cloneDir, false);
+          console.log("[browser] Launched OK on isolated profile");
+        } else {
+          throw new Error(
+            "Chrome profile is still locked after retry. " +
+              "Your daily Chrome is using this profile. " +
+              "Either close Chrome, or set CHROME_USE_REAL_PROFILE=0 " +
+              "(recommended — uses a dedicated JARVIS profile).\n" +
+              String(err2?.message || err2)
+          );
+        }
+      }
+    }
+  }
 
   const pages = await browser.pages();
-  page = pages[0] || (await browser.newPage());
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-  );
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-  });
+  page = (await pickBestPage(pages)) || (await browser.newPage());
+
+  // Stealth-ish: hide webdriver before any navigation
+  try {
+    const client = await page.createCDPSession();
+    await client.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        window.chrome = window.chrome || { runtime: {} };
+      `,
+    });
+  } catch {
+    /* ignore */
+  }
+
+  // Ensure window is windowed (not maximized / fullscreen)
+  try {
+    const winW = Number(process.env.CHROME_WINDOW_WIDTH || 1280);
+    const winH = Number(process.env.CHROME_WINDOW_HEIGHT || 800);
+    const session = await page.createCDPSession();
+    const { windowId } = await session.send("Browser.getWindowForTarget");
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: {
+        windowState: "normal",
+        width: winW,
+        height: winH,
+        left: 80,
+        top: 60,
+      },
+    });
+    await page.setViewport({ width: winW, height: winH, deviceScaleFactor: 1 });
+  } catch (e) {
+    console.warn("[browser] Could not force normal window bounds:", e?.message || e);
+  }
+
+  try {
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    });
+  } catch {
+    /* ignore */
+  }
 
   browser.on("disconnected", () => {
     browser = null;
@@ -61,9 +371,73 @@ export async function ensureBrowser({ headless = false } = {}) {
   return { browser, page };
 }
 
+/** Prefer a real content tab over leftover about:blank tabs. */
+async function pickBestPage(pages) {
+  const open = (pages || []).filter((p) => p && !p.isClosed());
+  if (!open.length) return null;
+
+  // Prefer YouTube / Music / active content
+  const scored = [];
+  for (const p of open) {
+    let url = "";
+    try {
+      url = p.url() || "";
+    } catch {
+      url = "";
+    }
+    let score = 0;
+    if (/music\.youtube\.com/i.test(url)) score += 100;
+    if (/youtube\.com/i.test(url)) score += 80;
+    if (/spotify\.com|google\./i.test(url)) score += 40;
+    if (url && !/^about:blank$/i.test(url) && !/^chrome:\/\//i.test(url)) score += 20;
+    if (page && p === page) score += 5;
+    scored.push({ p, score, url });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.length ? scored[0].p : null;
+}
+
+export function setActivePage(p) {
+  if (p && !p.isClosed()) page = p;
+}
+
 export async function getPage() {
   const ctx = await ensureBrowser({ headless: process.env.PUPPETEER_HEADLESS === "1" });
-  return ctx.page;
+  try {
+    const pages = await ctx.browser.pages();
+    const best = await pickBestPage(pages);
+    if (best) {
+      // If stored page is blank/closed but another tab has content, switch
+      let curUrl = "";
+      try {
+        curUrl = page && !page.isClosed() ? page.url() : "";
+      } catch {
+        curUrl = "";
+      }
+      if (
+        !page ||
+        page.isClosed() ||
+        /^about:blank$/i.test(curUrl) ||
+        best !== page
+      ) {
+        const bestUrl = best.url() || "";
+        if (
+          !page ||
+          page.isClosed() ||
+          /^about:blank$/i.test(curUrl) ||
+          (/music\.youtube|youtube\.com/i.test(bestUrl) && !/music\.youtube|youtube\.com/i.test(curUrl))
+        ) {
+          page = best;
+        }
+      }
+    }
+  } catch {
+    /* keep ctx.page */
+  }
+  if (!page || page.isClosed()) {
+    page = await ctx.browser.newPage();
+  }
+  return page;
 }
 
 export async function newTab(url) {
@@ -71,15 +445,58 @@ export async function newTab(url) {
     headless: process.env.PUPPETEER_HEADLESS === "1",
   });
   const p = await b.newPage();
-  if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
   page = p;
+  return p;
+}
+
+export async function replaceWithNewTab(url, oldPage = null) {
+  const { browser: b } = await ensureBrowser({
+    headless: process.env.PUPPETEER_HEADLESS === "1",
+  });
+  const prev = oldPage && !oldPage.isClosed() ? oldPage : page;
+
+  if (prev && !prev.isClosed()) {
+    try {
+      await prev.evaluate(() => {
+        document.querySelectorAll("video, audio").forEach((m) => {
+          try {
+            m.muted = true;
+            m.volume = 0;
+            m.pause();
+          } catch {
+            /* ignore */
+          }
+        });
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const p = await b.newPage();
+  await p.bringToFront();
+  if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
+  page = p;
+
+  if (prev && !prev.isClosed() && prev !== p) {
+    try {
+      await prev.close({ runBeforeUnload: false });
+    } catch {
+      /* ignore */
+    }
+  }
   return p;
 }
 
 export async function closeBrowser() {
   if (browser) {
     try {
-      await browser.close();
+      if (launchMeta.mode === "chrome-debug-attach") {
+        browser.disconnect();
+      } else {
+        await browser.close();
+      }
     } catch {
       /* ignore */
     }
@@ -91,7 +508,9 @@ export async function closeBrowser() {
 export function status() {
   return {
     connected: !!(browser && browser.connected),
-    userDataDir: USER_DATA,
+    mode: launchMeta.mode,
+    userDataDir: launchMeta.userDataDir,
+    profile: launchMeta.profile,
     url: page && !page.isClosed() ? page.url() : null,
   };
 }

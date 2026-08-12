@@ -1,16 +1,17 @@
 """
 pocket_tts.py — JARVIS voice clone (Pocket TTS)
 ================================================
-Quality-focused path:
-  - Clean mono 24 kHz voice prompt (not the raw noisy long stereo sample)
-  - Lower temperature + more LSD steps for clearer speech
-  - Full-buffer synthesis + high-latency playback to avoid stream crackle
-  - Light post-filter + fade + soft limiter
+Clean + snappy path:
+  - Quality decode (temp/LSD restored — LSD 1 was the hiss source)
+  - Stream playback with a stable ~200 ms first buffer (fast start, less crackle)
+  - Fixed-gain post-filter (no per-chunk peak-normalize pumping)
+  - Progressive sentences so long replies start on the first line
 """
 from __future__ import annotations
 
 import re
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,6 @@ import sounddevice as sd
 from pocket_tts import TTSModel
 
 VOICES_DIR = Path(__file__).with_name("voices")
-# Prefer the cleaned clone prompt; fall back to original if clean missing.
 VOICE_PROMPT_CLEAN = VOICES_DIR / "jarvis_voice_clean.wav"
 VOICE_PROMPT_RAW = VOICES_DIR / "jarvis voice.wav"
 
@@ -30,11 +30,18 @@ _playback_lock = threading.Lock()
 _stop_event = threading.Event()
 _is_speaking = False
 
-# Quality knobs (pocket-tts defaults: temp=0.7, lsd=1 → noisier)
+# Quality knobs — LSD 1 / high temp caused the audible noise
 _LOAD_TEMP = 0.45
-_LOAD_LSD_STEPS = 5
+_LOAD_LSD_STEPS = 3
 _LOAD_NOISE_CLAMP = 1.8
 _LOAD_EOS_THRESHOLD = -3.0
+
+# Stream: larger first buffer = smoother, still much faster than full-utterance wait
+_FIRST_BUFFER_SEC = 0.20
+_CHUNK_BUFFER_SEC = 0.08
+_MAX_SENTENCE_CHARS = 110
+# Fixed output gain (avoid re-normalizing every tiny block → pumping/hiss)
+_OUTPUT_GAIN = 0.78
 
 
 def _resolve_playback_rate(model_rate: int) -> int:
@@ -52,7 +59,6 @@ def _resolve_playback_rate(model_rate: int) -> int:
 def _resample_once(audio: np.ndarray, src: int, dst: int) -> np.ndarray:
     if src == dst or len(audio) == 0:
         return audio.astype(np.float32, copy=False)
-    # Polyphase-ish via linear interp is OK for short speech; prefer direct 24k when possible.
     n = max(1, int(len(audio) * dst / src))
     out = np.interp(
         np.linspace(0, len(audio) - 1, n, dtype=np.float64),
@@ -97,7 +103,6 @@ def _select_voice_prompt() -> Path:
 
 
 def _ensure_model_loaded():
-    """Load Pocket TTS with voice-cloning weights + cleaned JARVIS prompt."""
     global _model, _voice_state
     if _model is not None and _voice_state is not None:
         return
@@ -106,8 +111,6 @@ def _ensure_model_loaded():
             return
 
         prompt_path = _select_voice_prompt()
-
-        # Lower temp + more LSD steps = less hiss/artifacts on clone voices
         _model = TTSModel.load_model(
             temp=_LOAD_TEMP,
             lsd_decode_steps=_LOAD_LSD_STEPS,
@@ -121,7 +124,6 @@ def _ensure_model_loaded():
                 "`hf auth login`, then restart JARVIS."
             )
         try:
-            # truncate=True guards against overly long prompts
             _voice_state = _model.get_state_for_audio_prompt(prompt_path, truncate=True)
         except Exception as exc:
             raise RuntimeError(
@@ -129,23 +131,30 @@ def _ensure_model_loaded():
             ) from exc
         print(
             f"[TTS] Using JARVIS cloned voice: {prompt_path.name} "
-            f"(temp={_LOAD_TEMP}, lsd={_LOAD_LSD_STEPS}, noise_clamp={_LOAD_NOISE_CLAMP})"
+            f"(temp={_LOAD_TEMP}, lsd={_LOAD_LSD_STEPS}, noise_clamp={_LOAD_NOISE_CLAMP}, clean stream)"
         )
 
 
 def warm_up_tts():
-    """Load model, resolve playback rate, and prime inference."""
     try:
+        t0 = time.perf_counter()
         _ensure_model_loaded()
         rate = _resolve_playback_rate(_model.sample_rate)
-        # One short full generate (not stream) to warm caches cleanly
-        _ = _model.generate_audio(
+        n = 0
+        for chunk in _model.generate_audio_stream(
             model_state=_voice_state,
             text_to_generate="Ready.",
-            frames_after_eos=1,
             copy_state=True,
+            frames_after_eos=1,
+        ):
+            n += 1
+            _ = _chunk_to_samples(chunk)
+            if n >= 4:
+                break
+        print(
+            f"[TTS] Pocket TTS warmed ({rate}Hz, clean stream) "
+            f"in {(time.perf_counter() - t0) * 1000:.0f}ms."
         )
-        print(f"[TTS] Pocket TTS warmed ({rate}Hz playback, quality mode).")
     except Exception as exc:
         print(f"[TTS Warmup Error] {exc}")
 
@@ -156,67 +165,207 @@ def _chunk_to_samples(chunk) -> np.ndarray:
     return np.asarray(chunk, dtype=np.float32).reshape(-1)
 
 
-def _postprocess_audio(samples: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Reduce hiss/clicks: fade, soft high-pass, soft limit, normalize."""
+def _moving_average(x: np.ndarray, win: int) -> np.ndarray:
+    if win <= 1 or x.size == 0:
+        return x
+    win = int(min(win, max(1, x.size // 2)))
+    c = np.cumsum(np.insert(x.astype(np.float64), 0, 0.0))
+    ma = (c[win:] - c[:-win]) / float(win)
+    pad_l = win // 2
+    pad_r = x.size - ma.size - pad_l
+    if pad_r < 0:
+        ma = ma[: x.size]
+        pad_r = 0
+        pad_l = x.size - ma.size
+    return np.pad(ma, (max(0, pad_l), max(0, pad_r)), mode="edge")[: x.size]
+
+
+def _postprocess_block(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    fade_in: bool = False,
+    fade_out: bool = False,
+    full_clean: bool = False,
+) -> np.ndarray:
+    """
+    Clean stream/full audio without per-block peak normalize (that caused pumping).
+    full_clean: stronger filter for complete buffers / last block.
+    """
     if samples.size == 0:
         return samples.astype(np.float32)
 
     x = samples.astype(np.float64).copy()
+    x -= np.mean(x)
 
-    # DC remove
-    x = x - np.mean(x)
+    if full_clean or samples.size > sample_rate // 4:
+        # Rumble cut
+        hp_win = max(3, int(sample_rate / 70.0))
+        x = x - _moving_average(x, hp_win)
+        # Mild de-hiss
+        lp_win = max(3, int(sample_rate / 8500.0))
+        lp = _moving_average(x, lp_win)
+        x = 0.84 * x + 0.16 * lp
 
-    # Mild one-pole high-pass ~70 Hz (rumble / clone low-end mud)
-    # y[n] = a*(y[n-1] + x[n] - x[n-1])
-    rc = 1.0 / (2.0 * np.pi * 70.0)
-    dt = 1.0 / float(sample_rate)
-    a = rc / (rc + dt)
-    y = np.empty_like(x)
-    y[0] = x[0]
-    for i in range(1, len(x)):
-        y[i] = a * (y[i - 1] + x[i] - x[i - 1])
-    x = y
+    # Soft limit + fixed gain (stable loudness across stream blocks)
+    x = np.tanh(x * 1.08) * _OUTPUT_GAIN
 
-    # Soft high-shelf attenuate for hiss (simple 1-pole lowpass blend)
-    # blend 85% original + 15% lowpassed (~9 kHz)
-    alpha = np.exp(-2.0 * np.pi * 9000.0 / sample_rate)
-    lp = np.empty_like(x)
-    lp[0] = x[0]
-    for i in range(1, len(x)):
-        lp[i] = alpha * lp[i - 1] + (1 - alpha) * x[i]
-    x = 0.82 * x + 0.18 * lp
-
-    # Soft limiter (tanh) then peak normalize to -1.5 dB
-    x = np.tanh(x * 1.15)
-    peak = float(np.max(np.abs(x))) + 1e-9
-    target = 10 ** (-1.5 / 20.0)  # ~0.84
-    x = x / peak * target
-
-    # Fade in/out 12 ms to kill edge clicks
-    fade = max(1, int(sample_rate * 0.012))
-    if len(x) > 2 * fade:
-        env = np.ones(len(x), dtype=np.float64)
-        env[:fade] = np.linspace(0.0, 1.0, fade)
-        env[-fade:] = np.linspace(1.0, 0.0, fade)
-        x = x * env
+    fade = max(1, int(sample_rate * 0.008))
+    if fade_in and len(x) > fade:
+        x[:fade] *= np.linspace(0.0, 1.0, fade)
+    if fade_out and len(x) > fade:
+        x[-fade:] *= np.linspace(1.0, 0.0, fade)
 
     return np.clip(x, -1.0, 1.0).astype(np.float32)
 
 
-def _synthesize_clean(clean_text: str) -> np.ndarray:
-    """Full-buffer synthesis (clearer than tiny stream writes on Windows)."""
-    # frames_after_eos: a bit more tail so words don't cut off harshly
+def _postprocess_full(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Full-utterance polish (fallback path)."""
+    if samples.size == 0:
+        return samples.astype(np.float32)
+    x = samples.astype(np.float64).copy()
+    x -= np.mean(x)
+    hp_win = max(3, int(sample_rate / 70.0))
+    x = x - _moving_average(x, hp_win)
+    lp_win = max(3, int(sample_rate / 8500.0))
+    lp = _moving_average(x, lp_win)
+    x = 0.82 * x + 0.18 * lp
+    x = np.tanh(x * 1.12)
+    peak = float(np.max(np.abs(x))) + 1e-9
+    x = x / peak * (10 ** (-1.5 / 20.0))
+    fade = max(1, int(sample_rate * 0.010))
+    if len(x) > 2 * fade:
+        env = np.ones(len(x), dtype=np.float64)
+        env[:fade] = np.linspace(0.0, 1.0, fade)
+        env[-fade:] = np.linspace(1.0, 0.0, fade)
+        x *= env
+    return np.clip(x, -1.0, 1.0).astype(np.float32)
+
+
+def _split_for_progressive(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= _MAX_SENTENCE_CHARS:
+        return [text]
+
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    parts = [p.strip() for p in parts if p and p.strip()]
+    if len(parts) <= 1:
+        parts = re.split(r"(?<=[,;:])\s+", text)
+        parts = [p.strip() for p in parts if p and p.strip()]
+    if not parts:
+        return [text]
+
+    merged: list[str] = []
+    buf = ""
+    for p in parts:
+        if not buf:
+            buf = p
+        elif len(buf) + 1 + len(p) <= _MAX_SENTENCE_CHARS:
+            buf = f"{buf} {p}"
+        else:
+            merged.append(buf)
+            buf = p
+    if buf:
+        merged.append(buf)
+    return merged or [text]
+
+
+def _stream_and_play(clean_text: str, playback_rate: int) -> float:
+    """Stream with quality decode + stable gain. Returns TTFA seconds."""
+    model_rate = _model.sample_rate
+    direct = playback_rate == model_rate
+    first_buf = int(model_rate * _FIRST_BUFFER_SEC)
+    chunk_buf = int(model_rate * _CHUNK_BUFFER_SEC)
+    word_count = max(1, len(clean_text.split()))
+    frames_after = 3 if word_count <= 8 else 2
+
+    buf: list[np.ndarray] = []
+    buf_samples = 0
+    started = False
+    t_start = time.perf_counter()
+    t_first = None
+
+    # High host latency reduces underrun crackle on Windows
+    stream_kwargs = dict(
+        samplerate=playback_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=2048,
+        latency="high",
+    )
+    try:
+        out_stream = sd.OutputStream(**stream_kwargs)
+    except Exception:
+        stream_kwargs.pop("latency", None)
+        out_stream = sd.OutputStream(**stream_kwargs)
+
+    with out_stream as stream:
+        for chunk in _model.generate_audio_stream(
+            model_state=_voice_state,
+            text_to_generate=clean_text,
+            copy_state=True,
+            frames_after_eos=frames_after,
+        ):
+            if _stop_event.is_set():
+                break
+            samples = _chunk_to_samples(chunk)
+            if samples.size == 0:
+                continue
+            buf.append(samples)
+            buf_samples += len(samples)
+
+            need = first_buf if not started else chunk_buf
+            if buf_samples < need:
+                continue
+
+            block = np.concatenate(buf)
+            buf.clear()
+            buf_samples = 0
+            block = _postprocess_block(
+                block,
+                model_rate,
+                fade_in=not started,
+                fade_out=False,
+                full_clean=True,
+            )
+            if not direct:
+                block = _resample_once(block, model_rate, playback_rate)
+            if _stop_event.is_set():
+                break
+            stream.write(block.reshape(-1, 1))
+            if not started:
+                started = True
+                t_first = time.perf_counter() - t_start
+
+        if buf and not _stop_event.is_set():
+            block = _postprocess_block(
+                np.concatenate(buf),
+                model_rate,
+                fade_in=not started,
+                fade_out=True,
+                full_clean=True,
+            )
+            if not direct:
+                block = _resample_once(block, model_rate, playback_rate)
+            stream.write(block.reshape(-1, 1))
+            if not started:
+                t_first = time.perf_counter() - t_start
+
+    return float(t_first if t_first is not None else (time.perf_counter() - t_start))
+
+
+def _synthesize_full_fallback(clean_text: str) -> np.ndarray:
     word_count = max(1, len(clean_text.split()))
     frames_after = 3 if word_count <= 6 else 2
-
     audio = _model.generate_audio(
         model_state=_voice_state,
         text_to_generate=clean_text,
         frames_after_eos=frames_after,
         copy_state=True,
     )
-    samples = _chunk_to_samples(audio)
-    return _postprocess_audio(samples, _model.sample_rate)
+    return _postprocess_full(_chunk_to_samples(audio), _model.sample_rate)
 
 
 def _play_samples(samples: np.ndarray, playback_rate: int, model_rate: int) -> None:
@@ -224,18 +373,15 @@ def _play_samples(samples: np.ndarray, playback_rate: int, model_rate: int) -> N
         return
     if playback_rate != model_rate:
         samples = _resample_once(samples, model_rate, playback_rate)
-
-    # High latency = larger host buffer = fewer underruns/crackle
     try:
         sd.play(samples, samplerate=playback_rate, blocking=False, latency="high")
     except TypeError:
         sd.play(samples, samplerate=playback_rate, blocking=False)
 
-    # Wait while allowing stop_speech()
     duration = len(samples) / float(playback_rate)
-    step = 0.05
+    step = 0.04
     waited = 0.0
-    while waited < duration + 0.05:
+    while waited < duration + 0.06:
         if _stop_event.is_set():
             try:
                 sd.stop()
@@ -246,11 +392,12 @@ def _play_samples(samples: np.ndarray, playback_rate: int, model_rate: int) -> N
         waited += step
 
 
-def _pause_local_music():
+def _duck_local_music():
+    """Keep garage music playing under speech — only lower volume, never stop."""
     try:
-        from executor.music_services import pause_local_music
+        from executor.music_services import duck_for_speech
 
-        pause_local_music()
+        duck_for_speech()
     except Exception:
         pass
 
@@ -264,8 +411,24 @@ def _restore_local_music():
         pass
 
 
+def _speak_unit(clean_text: str, playback_rate: int) -> None:
+    if not clean_text or _stop_event.is_set():
+        return
+    try:
+        ttfa = _stream_and_play(clean_text, playback_rate)
+        print(f"[TTS] Stream unit chars={len(clean_text)} first_audio={ttfa * 1000:.0f}ms")
+    except Exception as exc:
+        print(f"[TTS] Stream failed ({exc}); full-buffer fallback")
+        try:
+            samples = _synthesize_full_fallback(clean_text)
+            if not _stop_event.is_set():
+                _play_samples(samples, playback_rate, _model.sample_rate)
+        except Exception as exc2:
+            print(f"[TTS] Fallback failed: {exc2}")
+
+
 def speak(text: str):
-    """Synthesize with clone voice and play cleanly (blocking until done/stop)."""
+    """Clean clone voice with progressive sentences + stable stream playback."""
     global _is_speaking
 
     clean_text = clean_text_for_speech(text)
@@ -281,79 +444,31 @@ def speak(text: str):
     with _playback_lock:
         _stop_event.clear()
         _is_speaking = True
-        _pause_local_music()
+        _duck_local_music()
+        t0 = time.perf_counter()
 
         try:
             playback_rate = _resolve_playback_rate(_model.sample_rate)
+            units = _split_for_progressive(clean_text)
             print(
-                f"[TTS] Quality synthesize+play ({playback_rate}Hz, "
-                f"chars={len(clean_text)})"
+                f"[TTS] Clean stream speak ({playback_rate}Hz, "
+                f"chars={len(clean_text)}, units={len(units)})"
             )
-            samples = _synthesize_clean(clean_text)
-            if _stop_event.is_set():
-                return
-            _play_samples(samples, playback_rate, _model.sample_rate)
+            for unit in units:
+                if _stop_event.is_set():
+                    break
+                _speak_unit(unit, playback_rate)
+            print(f"[TTS] Speak finished in {(time.perf_counter() - t0) * 1000:.0f}ms wall")
         except Exception as exc:
             print(f"[TTS Audio Error] {exc}")
-            # Fallback: stream path if full generate fails
-            try:
-                if not _stop_event.is_set():
-                    _stream_fallback(clean_text, _resolve_playback_rate(_model.sample_rate))
-            except Exception as exc2:
-                print(f"[TTS Fallback Error] {exc2}")
         finally:
             _restore_local_music()
             _is_speaking = False
             _stop_event.clear()
 
 
-def _stream_fallback(clean_text: str, playback_rate: int) -> None:
-    """Buffered stream fallback — still post-processes each write block."""
-    model_rate = _model.sample_rate
-    direct = playback_rate == model_rate
-    buf: list[np.ndarray] = []
-    buf_samples = 0
-    min_buf = int(model_rate * 0.25)  # 250 ms before first write
-
-    with sd.OutputStream(
-        samplerate=playback_rate,
-        channels=1,
-        dtype="float32",
-        blocksize=2048,
-        latency="high",
-    ) as stream:
-        for chunk in _model.generate_audio_stream(
-            model_state=_voice_state,
-            text_to_generate=clean_text,
-            copy_state=True,
-            frames_after_eos=2,
-        ):
-            if _stop_event.is_set():
-                break
-            samples = _chunk_to_samples(chunk)
-            if samples.size == 0:
-                continue
-            buf.append(samples)
-            buf_samples += len(samples)
-            if buf_samples < min_buf:
-                continue
-            block = np.concatenate(buf)
-            buf.clear()
-            buf_samples = 0
-            block = _postprocess_audio(block, model_rate)
-            if not direct:
-                block = _resample_once(block, model_rate, playback_rate)
-            stream.write(block.reshape(-1, 1))
-        if buf and not _stop_event.is_set():
-            block = _postprocess_audio(np.concatenate(buf), model_rate)
-            if not direct:
-                block = _resample_once(block, model_rate, playback_rate)
-            stream.write(block.reshape(-1, 1))
-
-
 def stop_speech():
     global _is_speaking
-
     _stop_event.set()
     _is_speaking = False
     try:

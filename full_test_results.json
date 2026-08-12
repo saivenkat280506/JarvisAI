@@ -1,0 +1,110 @@
+﻿[
+    {
+        "Test":  "health",
+        "Status":  "PASS",
+        "Ms":  51,
+        "Detail":  "{\"status\":\"online\"}"
+    },
+    {
+        "Test":  "settings",
+        "Status":  "PASS",
+        "Ms":  26,
+        "Detail":  "{\"muted\":false,\"autoWake\":true,\"realTimeFeedback\":true,\"volume\":100,\"confidence\":20,\"theme\":\"light\"}"
+    },
+    {
+        "Test":  "frontend",
+        "Status":  "PASS",
+        "Ms":  446,
+        "Detail":  "status=200 bytes=41356"
+    },
+    {
+        "Test":  "chat_intro",
+        "Status":  "PASS",
+        "Ms":  844,
+        "Detail":  "data: {\"text\": \"I am J.A.R.V.I.S., a highly advanced artificial intelligence system designed to assist and manage the various aspects of your life, sir. My capabilities include controlling systems, monitoring security, a..."
+    },
+    {
+        "Test":  "chat_joke",
+        "Status":  "PASS",
+        "Ms":  142,
+        "Detail":  "data: {\"text\": \"My ability to process millions of calculations per second is matched only by your ability to find incredibly complex ways to ask simple questions.\", \"model\": \"groq\", \"done\": false}\r\n\r\ndata: {\"done\": true}"
+    },
+    {
+        "Test":  "chat_time",
+        "Status":  "PASS",
+        "Ms":  468,
+        "Detail":  "data: {\"text\": \"Here are the latest headlines:\\n1. Vinicius Junior transfer news: Arsenal feel Real Madrid forward increasingly likely to stay at Spanish giants - Paper Talk \\u2014 Vinicius Junior transfer news: Arsenal ..."
+    },
+    {
+        "Test":  "open_notepad_cmd",
+        "Status":  "PASS",
+        "Ms":  302,
+        "Detail":  "data: {\"text\": \"Successfully opened notepad.\", \"model\": \"groq\", \"done\": false}\r\n\r\ndata: {\"done\": true}"
+    },
+    {
+        "Test":  "notepad_running",
+        "Status":  "PASS",
+        "Ms":  77,
+        "Detail":  "pid=10864"
+    },
+    {
+        "Test":  "close_notepad_cmd",
+        "Status":  "PASS",
+        "Ms":  65339,
+        "Detail":  "data: {\"text\": \"Chrome profile is still locked after retry. Close Chrome windows and try again.\\nThe browser is already running for C:\\\\Users\\\\saivenkat\\\\AppData\\\\Local\\\\Google\\\\Chrome\\\\User Data. Use a different `userDa..."
+    },
+    {
+        "Test":  "notepad_closed",
+        "Status":  "FAIL",
+        "Ms":  60,
+        "Detail":  "still open pid=10864"
+    },
+    {
+        "Test":  "open_calc_cmd",
+        "Status":  "PASS",
+        "Ms":  271,
+        "Detail":  "data: {\"text\": \"Successfully opened calculator.\", \"model\": \"groq\", \"done\": false}\r\n\r\ndata: {\"done\": true}"
+    },
+    {
+        "Test":  "calc_running",
+        "Status":  "PASS",
+        "Ms":  181,
+        "Detail":  "procs=CalculatorApp"
+    },
+    {
+        "Test":  "close_calc_cmd",
+        "Status":  "PASS",
+        "Ms":  65557,
+        "Detail":  "data: {\"text\": \"Chrome profile is still locked after retry. Close Chrome windows and try again.\\nThe browser is already running for C:\\\\Users\\\\saivenkat\\\\AppData\\\\Local\\\\Google\\\\Chrome\\\\User Data. Use a different `userDa..."
+    },
+    {
+        "Test":  "volume_set",
+        "Status":  "PASS",
+        "Ms":  299,
+        "Detail":  "data: {\"text\": \"Volume set to 40, sir.\", \"model\": \"groq\", \"done\": false}\r\n\r\ndata: {\"done\": true}"
+    },
+    {
+        "Test":  "screenshot",
+        "Status":  "PASS",
+        "Ms":  68266,
+        "Detail":  "reply=data: {\"text\": \"Chrome profile is still locked after retry. Close Chrome windows and try again.\\nThe browser is already running for C:\\\\Users\\\\saivenkat\\\\AppData\\\\Local\\\\Google\\\\Chrome\\\\User Data. Use a different `..."
+    },
+    {
+        "Test":  "mute_roundtrip",
+        "Status":  "PASS",
+        "Ms":  74,
+        "Detail":  "a=True b=False"
+    },
+    {
+        "Test":  "router_unit",
+        "Status":  "PASS",
+        "Ms":  252,
+        "Detail":  "send message to Rahul hello    -\u003e send_whatsapp\r\nplay music                     -\u003e play_local_music\r\nstop music                     -\u003e music_control\r\nreduce music volume by 3       -\u003e music_control\r\nset music volume to 5..."
+    },
+    {
+        "Test":  "reset",
+        "Status":  "PASS",
+        "Ms":  309,
+        "Detail":  "{\"status\":\"ok\",\"cancelled_tasks\":0}"
+    }
+]

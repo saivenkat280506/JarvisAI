@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# J.A.R.V.I.S.
 
-## Getting Started
+**Just A Rather Very Intelligent System** — local AI desktop assistant with voice, OS automation, and WhatsApp drafting.
 
-First, run the development server:
+## Launch for demo / judges
+
+1. Double-click **`JARVIS.bat`** (or the Desktop shortcut **J.A.R.V.I.S.**)
+2. Wait until the console says **SYSTEMS ONLINE**
+3. Use the desktop window
+4. Run the same launcher again to **stop** everything (toggle)
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# Or from a terminal in this folder:
+npm run jarvis          # toggle start/stop
+npm run jarvis:start    # force start
+npm run jarvis:stop     # force stop
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## What it runs
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Component | Port | Role |
+|-----------|------|------|
+| FastAPI backend | 8000 | Brain, tools, STT/TTS, automation |
+| Next.js UI | 3000 | Chat + orb interface |
+| Electron (optional) | — | Desktop window shell |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Demo commands
 
-## Learn More
+- `Hello Jarvis, introduce yourself`
+- `What time is it?`
+- `Open notepad` / `Close notepad`
+- `Tell me a joke`
+- `Set volume to 40`
+- `send message to +91XXXXXXXXXX your text` → Jarvis asks; say `yes` to send
 
-To learn more about Next.js, take a look at the following resources:
+See **PRESENTATION_DEMO.md** for a full judge script.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Project layout
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `backend/` — Python FastAPI core
+- `app/` + `components/` — Next.js UI
+- `electron-main.js` — desktop shell
+- `scripts/Jarvis-Launcher.ps1` — one-click start/stop launcher
+- `browser-automation/` — Puppeteer control plane
 
-## Deploy on Vercel
+## Dev (manual)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+# Terminal 1
+cd backend
+.\.venv\Scripts\python.exe main.py
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Terminal 2
+npm run dev
+
+# Optional desktop shell
+npm run desktop
+```
