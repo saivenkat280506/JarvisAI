@@ -16,7 +16,9 @@ from executor.error_handler import log_error
 NO_SEARCH_FALLBACK_INTENTS = {
     "cancel_task", "music_control", "volume_control",
     "play_local_music", "daddys_home", "play_youtube_music", "play_youtube_search", "play_spotify",
-    "open_app", "send_whatsapp", "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "open_app", "send_whatsapp", "send_whatsapp_all",
+    "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "remember", "recall", "add_task", "list_tasks", "complete_task",
     "calculate",
     "joke", "news", "greeting",
     "spotify_login", "browser_action", "browser_scroll_test",

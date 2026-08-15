@@ -32,3 +32,5 @@ Inspect only:
 ```text
 git show jarvis-snapshot-2026-08-15
 ```
+
+Work after this tag (memory store, all-contacts, latency) is on `main` and can be discarded by checking out the tag above.

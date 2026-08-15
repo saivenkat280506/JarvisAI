@@ -120,6 +120,59 @@ def _strip_trailing_contact(message: str, contact: str) -> str:
     return cleaned
 
 
+_ALL_CONTACTS_MARK = re.compile(
+    r"\b(?:all|every|each)\s+(?:of\s+)?(?:my\s+)?(?:saved\s+)?(?:whatsapp\s+)?contacts?\b",
+    re.I,
+)
+_UNSAFE_BLAST = re.compile(
+    r"\b(?:group|groups|everyone|everybody|broadcast\s+list|status|channel)\b",
+    re.I,
+)
+
+
+def _route_all_contacts_send(text: str, text_clean: str):
+    """
+    Only an explicit 'all/every/each ... contact(s)' send is allowed.
+    'everyone', groups, and 'send to all' without 'contact' are rejected or ignored.
+    """
+    if not _ALL_CONTACTS_MARK.search(text_clean):
+        return None
+    if _UNSAFE_BLAST.search(text_clean):
+        return "send_whatsapp_all", {
+            "message": "",
+            "error": (
+                "I will only send to saved individual contacts, "
+                "not groups or everyone on WhatsApp."
+            ),
+        }
+    if not re.search(r"\b(?:send|text|message|whatsapp)\b", text_clean, re.I):
+        return None
+
+    patterns = (
+        r"^(?:open\s+)?(?:whatsapp\s+(?:and\s+)?)?(?:send|text|message)\s+(.+?)\s+"
+        r"to\s+(?:all|every|each)\s+(?:of\s+)?(?:my\s+)?(?:saved\s+)?(?:whatsapp\s+)?contacts?$",
+        r"^(?:open\s+)?(?:whatsapp\s+(?:and\s+)?)?(?:send|text|message)\s+(?:this\s+)?"
+        r"(?:to\s+)?(?:all|every|each)\s+(?:of\s+)?(?:my\s+)?(?:saved\s+)?"
+        r"(?:whatsapp\s+)?contacts?\s*[:\-]?\s*(.+)$",
+        r"^(?:open\s+)?whatsapp\s+(?:and\s+)?(?:send\s+)?(?:to\s+)?"
+        r"(?:all|every|each)\s+(?:of\s+)?(?:my\s+)?contacts?\s+(.+)$",
+    )
+    message = ""
+    for pattern in patterns:
+        match = re.search(pattern, text_clean, re.I)
+        if match:
+            message = match.group(1).strip(" \"'")
+            if message.lower() in {"this", "it", "that", "the same", "the message"}:
+                try:
+                    from brain.memory import get_memory
+                    last = get_memory("last_whatsapp_request") or {}
+                    message = (last.get("message") or "").strip()
+                except Exception:
+                    message = ""
+            break
+    return "send_whatsapp_all", {"message": message}
+
+
 def route_command(text: str):
     """
     Analyzes input text and routes it to a specific intent if it's a clear command.
@@ -185,11 +238,62 @@ def route_command(text: str):
         text_clean,
         re.IGNORECASE,
     ):
+        if retry_request.get("all_contacts"):
+            return "send_whatsapp_all", {"message": retry_request.get("message", "")}
         return "send_whatsapp", {
             "name": retry_request.get("name", ""),
             "number": retry_request.get("number", ""),
             "message": retry_request.get("message", ""),
         }
+
+    # Local memory — no LLM. Must stay before WhatsApp so "remember sathish likes tea"
+    # is stored, not treated as a send.
+    remember_cmd = re.match(
+        r"^(?:please\s+)?(?:remember|note|save this|don't forget)\s+(.+)$",
+        text_clean,
+        re.IGNORECASE,
+    )
+    if remember_cmd:
+        return "remember", {"text": remember_cmd.group(1).strip()}
+
+    if re.fullmatch(
+        r"(?:list|show|what are)\s+(?:my\s+)?(?:saved\s+)?(?:whatsapp\s+)?contacts",
+        text_clean,
+        re.I,
+    ):
+        return "recall", {"query": "contacts"}
+
+    if re.fullmatch(r"(?:list|show|what are)\s+(?:my\s+)?tasks", text_clean, re.I):
+        return "list_tasks", {}
+
+    add_task_cmd = re.match(
+        r"^(?:add\s+(?:a\s+)?task(?:\s+to)?|new task)\s+(.+)$",
+        text_clean,
+        re.I,
+    )
+    if add_task_cmd:
+        return "add_task", {"title": add_task_cmd.group(1).strip()}
+
+    done_task = re.match(
+        r"^(?:complete|finish|done with|mark done)\s+(?:task\s+)?(.+)$",
+        text_clean,
+        re.I,
+    )
+    if done_task:
+        return "complete_task", {"query": done_task.group(1).strip()}
+
+    recall_cmd = re.match(
+        r"^(?:what(?:'s| is| do you remember)|who is|do you remember|"
+        r"what did i (?:tell|say)|look up|remind me what)\s+(.+)$",
+        text_clean,
+        re.I,
+    )
+    if recall_cmd:
+        return "recall", {"query": recall_cmd.group(1).strip()}
+
+    all_contacts = _route_all_contacts_send(text, text_clean)
+    if all_contacts is not None:
+        return all_contacts
 
     # Phone number pattern: +91 85199 29108 / 8519929108 / +918519929108
     _phone = r"(\+?\d[\d\s\-()]{7,}\d)"

@@ -532,9 +532,10 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             final_response = await _groq_generate(
                 "The user asked what you can do. List your capabilities concisely in 2-3 sentences. "
                 "Do not greet. Start directly with what you can do. "
-                "You can: answer questions, open apps, play songs on YouTube Music via browser automation, "
+                "You can: answer questions, remember facts and tasks locally, "
+                "open apps, play songs on YouTube Music via browser automation, "
                 "run scroll demos, search Google in a real browser, control volume, "
-                "send WhatsApp messages, tell jokes, and read news. Be concise.",
+                "send WhatsApp messages to saved contacts only, tell jokes, and read news. Be concise.",
                 system=JARVIS_SYSTEM_PROMPT,
             )
 
@@ -573,14 +574,19 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             final_response = result if isinstance(result, str) else "I could not complete that calculation, sir."
 
         elif intent == "qa":
-            final_response = await _groq_generate(
-                f"Question (voice transcript — may contain speech-to-text errors, "
-                f"interpret phonetically): {command_text}\n"
-                "Examples: 'nice in a mind' likely means 'niacinamide'. "
-                "Answer the user's intended question in 1 to 3 sentences. "
-                "No greeting. Start with the answer immediately.",
-                system=QA_SYSTEM_PROMPT,
-            )
+            from brain.memory_store import try_fast_answer
+            remembered = try_fast_answer(command_text)
+            if remembered:
+                final_response = remembered
+            else:
+                final_response = await _groq_generate(
+                    f"Question (voice transcript — may contain speech-to-text errors, "
+                    f"interpret phonetically): {command_text}\n"
+                    "Examples: 'nice in a mind' likely means 'niacinamide'. "
+                    "Answer the user's intended question in 1 to 3 sentences. "
+                    "No greeting. Start with the answer immediately.",
+                    system=QA_SYSTEM_PROMPT,
+                )
 
         elif intent == "intro":
             final_response = await _groq_generate(
@@ -640,12 +646,17 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                 final_response = f"Good {tod}, sir. How can I help you today?"
                 intent = "greeting"
             else:
-                final_response = await _groq_generate(
-                    f"{command_text}\n"
-                    "Reply naturally in 1-3 sentences. Do not greet unless the user just said hello. "
-                    "Never claim you adjusted lights, devices, or the environment unless a tool actually did so.",
-                    system=JARVIS_SYSTEM_PROMPT,
-                )
+                from brain.memory_store import try_fast_answer
+                remembered = try_fast_answer(command_text)
+                if remembered:
+                    final_response = remembered
+                else:
+                    final_response = await _groq_generate(
+                        f"{command_text}\n"
+                        "Reply naturally in 1-3 sentences. Do not greet unless the user just said hello. "
+                        "Never claim you adjusted lights, devices, or the environment unless a tool actually did so.",
+                        system=JARVIS_SYSTEM_PROMPT,
+                    )
 
         elif intent == "play_local_music":
             # Garage track + full time-based J.A.R.V.I.S. dialogue (Windows vol 50/25)
@@ -700,7 +711,8 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                 add_to_history(command_text)
                 final_response = result if isinstance(result, str) else respond_success(intent, params or {})
                 if intent not in (
-                    "play_local_music", "daddys_home", "music_control", "volume_control"
+                    "play_local_music", "daddys_home", "music_control", "volume_control",
+                    "remember", "recall", "add_task", "list_tasks", "complete_task",
                 ):
                     await manager.broadcast_json({"action": "focus_window"})
             else:
@@ -807,7 +819,10 @@ async def process_command_with_timeout(command_text: str, request_id: str = None
         k in low
         for k in ("whatsapp", "watsapp", "whats app", "message to", "send satish", "send sathish")
     )
+    all_contacts = "all contact" in low or "every contact" in low or "each contact" in low
     if browserish:
+        timeout_s = 300.0
+    elif all_contacts:
         timeout_s = 300.0
     elif whatsappish:
         timeout_s = 180.0

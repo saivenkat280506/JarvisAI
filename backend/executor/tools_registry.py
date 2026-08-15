@@ -8,11 +8,21 @@ from executor.open_app import open_app
 from executor.automation import (
     send_whatsapp_message,
     prepare_whatsapp_message,
+    send_whatsapp_to_saved_contacts,
     confirm_send_whatsapp_message,
     cancel_whatsapp_draft,
     search_google,
     read_news_headlines,
     smart_search,
+)
+from brain.memory_store import (
+    remember_fact,
+    parse_remember_text,
+    recall,
+    add_task,
+    list_tasks,
+    complete_task,
+    list_remembered_contacts,
 )
 from brain.memory import save_memory, get_memory
 from executor.music_services import (
@@ -93,6 +103,52 @@ def _send_whatsapp_tool(params: dict):
     return success, result
 
 
+def _send_whatsapp_all_tool(params: dict):
+    message = (params or {}).get("message") or (params or {}).get("text") or ""
+    error = (params or {}).get("error") or ""
+    if error:
+        return False, error
+    if not message.strip():
+        return False, (
+            "Say the message and 'all contacts' together, for example: "
+            "send hello from Jarvis to all contacts."
+        )
+    save_memory("last_whatsapp_request", {"all_contacts": True, "message": message})
+    save_memory("pending_whatsapp", None)
+    success, result = send_whatsapp_to_saved_contacts(message)
+    if success:
+        save_memory("last_whatsapp_request", None)
+    return success, result
+
+
+def _remember_tool(params: dict):
+    text = (params or {}).get("text") or ""
+    key = (params or {}).get("key") or ""
+    value = (params or {}).get("value") or ""
+    if not key or not value:
+        key, value = parse_remember_text(text)
+    return remember_fact(key, value)
+
+
+def _recall_tool(params: dict):
+    query = (params or {}).get("query") or (params or {}).get("text") or ""
+    if query.strip().lower() in {"contacts", "contact", "whatsapp list"}:
+        return list_remembered_contacts()
+    return recall(query)
+
+
+def _add_task_tool(params: dict):
+    return add_task((params or {}).get("title") or (params or {}).get("task") or "")
+
+
+def _list_tasks_tool(params: dict = None):
+    return list_tasks(((params or {}).get("status") or "open"))
+
+
+def _complete_task_tool(params: dict):
+    return complete_task((params or {}).get("query") or (params or {}).get("title") or "")
+
+
 def _confirm_whatsapp_tool(params: dict = None):
     pending = get_memory("pending_whatsapp") or {}
     last = get_memory("last_whatsapp_request") or {}
@@ -114,8 +170,14 @@ def _cancel_whatsapp_tool(params: dict = None):
 TOOL_MAP = {
     "open_app": lambda params: open_app(params.get("app", "notepad")),
     "send_whatsapp": lambda params: _send_whatsapp_tool(params),
+    "send_whatsapp_all": lambda params: _send_whatsapp_all_tool(params),
     "confirm_whatsapp_send": lambda params: _confirm_whatsapp_tool(params),
     "cancel_whatsapp_send": lambda params: _cancel_whatsapp_tool(params),
+    "remember": lambda params: _remember_tool(params),
+    "recall": lambda params: _recall_tool(params),
+    "add_task": lambda params: _add_task_tool(params),
+    "list_tasks": lambda params: _list_tasks_tool(params),
+    "complete_task": lambda params: _complete_task_tool(params),
     # Garage track only — volume is local mixer % (not system volume)
     "play_local_music": lambda params: play_local_garage(
         int((params or {}).get("volume") or 50)

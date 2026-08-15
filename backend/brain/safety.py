@@ -7,7 +7,9 @@ Ensures LLM output is valid and safe before execution.
 import json
 
 ALLOWED_INTENTS = [
-    "open_app", "send_whatsapp", "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "open_app", "send_whatsapp", "send_whatsapp_all",
+    "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "remember", "recall", "add_task", "list_tasks", "complete_task",
     "play_local_music", "daddys_home", "play_youtube_music",
     "play_youtube_search", "play_spotify", "music_control", "volume_control", "search_browser",
     "cancel_task", "chat", "greeting", "capabilities", "news", "joke",

@@ -43,6 +43,13 @@ async def _warm_puppeteer():
 
 async def start_all_services():
     """Called during FastAPI lifespan to start all background services."""
+    try:
+        from brain.memory_store import init_store
+        init_store()
+        print("[Startup] Local memory store ready.")
+    except Exception as e:
+        print(f"[Startup] Memory store failed to start: {e}")
+
     from executor.agent_loop import agent_loop
     asyncio.create_task(agent_loop.run())
 

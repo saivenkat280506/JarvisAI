@@ -71,6 +71,9 @@ __pycache__/
 backend/sessions/
 jarvis_memory.json
 backend/jarvis_memory.json
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
 
 logs.txt
 # local session / agent clutter
