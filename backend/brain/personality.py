@@ -19,9 +19,9 @@ RESPONSE_MAP = {
         "fail": ["I couldn’t open {app}, sir.", "Unable to locate {app}, sir.", "It appears {app} is not responding or missing from registry."]
     },
     "send_whatsapp": {
-        "start": ["Looking up the number and drafting the message, sir.", "Opening WhatsApp and searching by number, sir.", "Preparing the draft for confirmation, sir."],
-        "success": ["Draft ready — shall I send it, sir?", "Message typed. Say yes to send, sir.", "Awaiting your confirmation to send, sir."],
-        "fail": ["Failed to prepare the WhatsApp draft, sir.", "Could not open the chat by number, sir.", "Transmission setup failed, sir."]
+        "start": ["Opening WhatsApp and loading the chat, sir."],
+        "success": ["WhatsApp message sent, sir."],
+        "fail": ["Could not open WhatsApp contact, sir."]
     },
     "confirm_whatsapp_send": {
         "start": ["Sending now, sir."],

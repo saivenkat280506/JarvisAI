@@ -14,7 +14,7 @@ RESPONSES = {
     # Final responses (completion)
     "open_app_success": "Interface deployed.",
     "open_app_fail": "I encountered an error while launching the application.",
-    "send_whatsapp_success": "Transmission complete, sir.",
+    "send_whatsapp_success": "WhatsApp message sent, sir.",
     "send_whatsapp_fail": "Communication link failed.",
     "play_music_success": "Audio stream established.",
     "play_music_fail": "The requested media could not be located.",

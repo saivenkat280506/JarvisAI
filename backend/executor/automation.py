@@ -10,10 +10,15 @@ import subprocess
 import os
 import re
 import json
+import csv
+import ctypes
+from ctypes import wintypes
 import webbrowser
 import urllib.parse
 import time
+from difflib import get_close_matches
 import pyautogui
+pyautogui.FAILSAFE = False
 from pywinauto import Application, keyboard
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -115,29 +120,238 @@ def open_browser(manual_path=None):
     except Exception as e:
         return False, f"Failed to open any browser: {str(e)}"
 
-def open_whatsapp():
-    """Opens WhatsApp Desktop."""
-    user_home = os.path.expanduser("~")
-    whatsapp_path = os.path.join(user_home, "AppData", "Local", "WhatsApp", "WhatsApp.exe")
-    
-    if os.path.exists(whatsapp_path):
-        try:
-            subprocess.Popen([whatsapp_path], shell=False)
-            return True, "Successfully opened WhatsApp Desktop."
-        except Exception as e:
-            return False, f"Failed to open WhatsApp Desktop: {str(e)}"
-    
-    # Fallback to protocol
+# ── WhatsApp Desktop (WhatsApp.Root / WinUI) ──────────────────────────────────
+# This Store build exposes almost no UIA Edit controls. The reliable flow is:
+# open app → wait until loaded → open the saved chat → clear → type → send.
+
+_CONTACTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_contacts.json")
+_user32 = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+_SW_RESTORE = 9
+_SW_SHOW = 5
+_WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+_BROWSER_WINDOW_CLASSES = (
+    "Chrome_WidgetWin_0",
+    "Chrome_WidgetWin_1",
+    "MozillaWindowClass",
+)
+
+
+def _ensure_dpi_aware():
     try:
-        subprocess.run("start whatsapp:", shell=True, check=True)
-        return True, "Successfully opened WhatsApp via protocol."
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            _user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def _whatsapp_pids() -> set:
+    pids = set()
+    try:
+        res = subprocess.run(
+            "tasklist /fo csv /nh",
+            shell=True,
+            capture_output=True,
+            text=True,
+        )
+        for row in csv.reader(res.stdout.splitlines()):
+            if len(row) < 2:
+                continue
+            name = row[0].strip().strip('"')
+            if "whatsapp" in name.lower():
+                try:
+                    pids.add(int(row[1].strip().strip('"')))
+                except ValueError:
+                    continue
+    except Exception as exc:
+        print(f"[WhatsApp] Could not list processes: {exc}")
+    return pids
+
+
+def _window_info(hwnd: int) -> dict:
+    length = _user32.GetWindowTextLengthW(hwnd)
+    title_buf = ctypes.create_unicode_buffer(length + 1)
+    _user32.GetWindowTextW(hwnd, title_buf, length + 1)
+    cls_buf = ctypes.create_unicode_buffer(256)
+    _user32.GetClassNameW(hwnd, cls_buf, 256)
+    pid = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    rect = wintypes.RECT()
+    _user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return {
+        "hwnd": int(hwnd),
+        "title": title_buf.value,
+        "class": cls_buf.value,
+        "pid": pid.value,
+        "left": rect.left,
+        "top": rect.top,
+        "right": rect.right,
+        "bottom": rect.bottom,
+        "w": rect.right - rect.left,
+        "h": rect.bottom - rect.top,
+        "visible": bool(_user32.IsWindowVisible(hwnd)),
+        "iconic": bool(_user32.IsIconic(hwnd)),
+    }
+
+
+def _is_browser_whatsapp(info: dict) -> bool:
+    title = (info.get("title") or "").lower()
+    cls = info.get("class") or ""
+    if cls in _BROWSER_WINDOW_CLASSES or cls.startswith("Chrome_WidgetWin"):
+        return True
+    if "whatsapp web" in title:
+        return True
+    if re.match(r"^\(\d+\)\s*whatsapp", title):
+        return True
+    return False
+
+
+def _is_desktop_whatsapp_candidate(info: dict, pids: set) -> bool:
+    if info["w"] < 400 or info["h"] < 300:
+        return False
+    if _is_browser_whatsapp(info):
+        return False
+    title = (info.get("title") or "").lower()
+    cls = info.get("class") or ""
+    if info["pid"] in pids and cls == "WinUIDesktopWin32WindowClass":
+        return True
+    if info["pid"] in pids and "whatsapp" in title:
+        return True
+    if cls == "WinUIDesktopWin32WindowClass" and "whatsapp" in title:
+        return True
+    if title == "whatsapp" or title.startswith("whatsapp "):
+        return True
+    return False
+
+
+def _find_desktop_whatsapp() -> dict | None:
+    pids = _whatsapp_pids()
+    found = []
+
+    def _cb(hwnd, _lparam):
+        try:
+            info = _window_info(hwnd)
+            if _is_desktop_whatsapp_candidate(info, pids):
+                found.append(info)
+        except Exception:
+            pass
+        return True
+
+    _user32.EnumWindows(_WNDENUMPROC(_cb), 0)
+    if not found:
+        return None
+
+    def _score(info):
+        score = info["w"] * info["h"]
+        if info["class"] == "WinUIDesktopWin32WindowClass":
+            score += 10_000_000
+        if info["pid"] in pids:
+            score += 5_000_000
+        if info["visible"]:
+            score += 1_000
+        return score
+
+    return max(found, key=_score)
+
+
+def _focus_hwnd(hwnd: int) -> bool:
+    if _user32.GetForegroundWindow() == hwnd and not _user32.IsIconic(hwnd):
+        return True
+    if _user32.IsIconic(hwnd):
+        _user32.ShowWindow(hwnd, _SW_RESTORE)
+    else:
+        _user32.ShowWindow(hwnd, _SW_SHOW)
+    _user32.BringWindowToTop(hwnd)
+    if _user32.SetForegroundWindow(hwnd):
+        time.sleep(0.25)
+        return True
+    # Last resort only: attach input. Do not tap Alt — that steals the composer.
+    fg = _user32.GetForegroundWindow()
+    fg_tid = _user32.GetWindowThreadProcessId(fg, None)
+    cur_tid = _kernel32.GetCurrentThreadId()
+    attached = False
+    if fg_tid and fg_tid != cur_tid:
+        attached = bool(_user32.AttachThreadInput(cur_tid, fg_tid, True))
+    _user32.BringWindowToTop(hwnd)
+    _user32.SetForegroundWindow(hwnd)
+    if attached:
+        _user32.AttachThreadInput(cur_tid, fg_tid, False)
+    time.sleep(0.25)
+    return True
+
+
+def _wait_for_whatsapp_window(timeout: float = 25.0, focus: bool = True) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        info = _find_desktop_whatsapp()
+        if info:
+            if focus:
+                _focus_hwnd(info["hwnd"])
+                info = _window_info(info["hwnd"])
+            if info["w"] >= 400 and info["h"] >= 300:
+                print(
+                    f"[WhatsApp] Ready: title={info['title']!r} "
+                    f"class={info['class']!r} {info['w']}x{info['h']}"
+                )
+                return info
+        time.sleep(0.4)
+    raise RuntimeError("WhatsApp Desktop did not finish loading.")
+
+
+def open_whatsapp():
+    """Open WhatsApp Desktop, or focus it if it is already running."""
+    _ensure_dpi_aware()
+    if _whatsapp_pids():
+        info = _find_desktop_whatsapp()
+        if info:
+            _focus_hwnd(info["hwnd"])
+            return True, "WhatsApp is already open, sir."
+    try:
+        os.startfile("whatsapp:")
+        return True, "Successfully opened WhatsApp."
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(
+            "powershell -Command \"Start-Process 'explorer.exe' "
+            "'shell:AppsFolder\\\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App'\"",
+            shell=True,
+        )
+        return True, "Successfully opened WhatsApp UWP."
     except Exception as e:
         return False, f"Failed to open WhatsApp: {str(e)}"
 
 
-# ── WhatsApp helpers: always search by PHONE NUMBER (never name) ──────────────
+def _focus_whatsapp_window():
+    """Find and focus the Desktop WhatsApp window. Returns True if focused."""
+    try:
+        info = _find_desktop_whatsapp()
+        if not info:
+            return False
+        _focus_hwnd(info["hwnd"])
+        print(f"[WhatsApp] Focused window: '{info['title']}'")
+        return True
+    except Exception as e:
+        print(f"[WhatsApp] Could not focus WhatsApp window: {e}")
+        return False
 
-_CONTACTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_contacts.json")
+
+def _focus_browser_window():
+    """Focus a browser window that might host WhatsApp Web. Unused by Desktop send."""
+    for title_pattern in [".*WhatsApp.*Web.*", ".*Chrome.*", ".*Edge.*", ".*Arc.*", ".*Firefox.*"]:
+        try:
+            app = Application(backend="uia").connect(title_re=title_pattern, timeout=3)
+            win = app.top_window()
+            win.set_focus()
+            time.sleep(0.3)
+            print(f"[WhatsApp] Focused browser: '{win.window_text()}'")
+            return True
+        except Exception:
+            continue
+    print("[WhatsApp] Could not focus any browser window")
+    return False
 
 
 def _load_whatsapp_contacts() -> dict:
@@ -158,7 +372,8 @@ def normalize_phone_number(value: str) -> str:
     if not value:
         return ""
     raw = str(value).strip()
-    # Already mostly numeric?
+    if "..." in raw or "…" in raw:
+        return ""
     has_plus = raw.lstrip().startswith("+")
     digits = re.sub(r"\D", "", raw)
     if not digits:
@@ -169,19 +384,34 @@ def normalize_phone_number(value: str) -> str:
 def looks_like_phone_number(value: str) -> bool:
     if not value:
         return False
-    digits = re.sub(r"\D", "", str(value))
-    return len(digits) >= 8
+    raw = str(value).strip()
+    if "..." in raw or "…" in raw:
+        return False
+    digits = re.sub(r"\D", "", raw)
+    return len(digits) >= 10
 
 
 def resolve_whatsapp_number(name_or_number: str, number: str = "") -> tuple:
     """
-    Resolve a WhatsApp search target to a phone number.
-    ALWAYS prefers an explicit number over a contact name to avoid same-name confusion.
+    Resolve a WhatsApp target to a saved phone number.
+    Placeholder numbers such as '+91...' are ignored so the contact name is used.
 
     Returns: (ok: bool, phone: str, label: str, error: str)
     """
+    contacts = _load_whatsapp_contacts()
+    saved_numbers = {
+        normalize_phone_number(saved)
+        for saved in contacts.values()
+        if looks_like_phone_number(normalize_phone_number(saved))
+    }
+
     explicit = normalize_phone_number(number) if number else ""
     if explicit and looks_like_phone_number(explicit):
+        if explicit not in saved_numbers:
+            return False, "", explicit, (
+                f"The WhatsApp number {explicit} is not in the saved contacts database. "
+                "I will not open or message an unlisted contact."
+            )
         label = (name_or_number or explicit).strip() or explicit
         return True, explicit, label, ""
 
@@ -191,32 +421,68 @@ def resolve_whatsapp_number(name_or_number: str, number: str = "") -> tuple:
 
     if looks_like_phone_number(target):
         phone = normalize_phone_number(target)
-        return True, phone, phone, ""
+        if phone in saved_numbers:
+            return True, phone, phone, ""
+        return False, "", phone, (
+            f"The WhatsApp number {phone} is not in the saved contacts database. "
+            "I will not open or message an unlisted contact."
+        )
 
-    contacts = _load_whatsapp_contacts()
     key = target.lower()
     if key in contacts:
         phone = normalize_phone_number(contacts[key])
         if looks_like_phone_number(phone):
             return True, phone, target, ""
 
-    # Partial name match (unique only)
+    # Speech often drops or swaps a letter (Satish/Sathish, Sadeesh, Nishant).
+    # Accept several close names only when they all resolve to the same number.
+    close = get_close_matches(key, list(contacts.keys()), n=3, cutoff=0.55)
+    if close:
+        phones = {
+            normalize_phone_number(contacts[name])
+            for name in close
+            if looks_like_phone_number(normalize_phone_number(contacts[name]))
+        }
+        if len(phones) == 1:
+            return True, next(iter(phones)), close[0], ""
+
     matches = [(n, p) for n, p in contacts.items() if key in n or n in key]
-    if len(matches) == 1:
-        phone = normalize_phone_number(matches[0][1])
-        if looks_like_phone_number(phone):
-            return True, phone, matches[0][0], ""
+    unique_phones = {
+        normalize_phone_number(p)
+        for _, p in matches
+        if looks_like_phone_number(normalize_phone_number(p))
+    }
+    if len(unique_phones) == 1:
+        return True, next(iter(unique_phones)), matches[0][0], ""
     if len(matches) > 1:
         names = ", ".join(m[0] for m in matches[:5])
         return False, "", target, (
             f"Multiple contacts match '{target}' ({names}). "
-            "Please provide the full phone number so I search by number only."
+            "Please say the saved contact name clearly."
         )
 
     return False, "", target, (
         f"I do not have a saved phone number for '{target}'. "
-        "Please give the full number (with country code) so I can search WhatsApp by number."
+        "Please use a saved contact so I can open the correct chat."
     )
+
+
+def _clipboard_get() -> str:
+    if not HAS_CLIPBOARD:
+        return ""
+    try:
+        return pyperclip.paste() or ""
+    except Exception:
+        return ""
+
+
+def _clipboard_set(text: str):
+    if not HAS_CLIPBOARD:
+        return
+    try:
+        pyperclip.copy(text)
+    except Exception:
+        pass
 
 
 def _paste_text(text: str):
@@ -228,8 +494,7 @@ def _paste_text(text: str):
             pyautogui.hotkey("ctrl", "v")
             return
         except Exception as e:
-            print(f"[WhatsApp] Clipboard paste failed, typing fallback: {e}")
-    # Fallback: type digit-by-digit (pyautogui.write struggles with '+')
+            print(f"[WhatsApp] Clipboard paste failed, typing instead: {e}")
     for ch in text:
         if ch == "+":
             pyautogui.hotkey("shift", "=")
@@ -238,139 +503,207 @@ def _paste_text(text: str):
         time.sleep(0.02)
 
 
-def _focus_whatsapp_search_and_type_number(phone: str):
-    """
-    Open/focus WhatsApp search bar and enter the PHONE NUMBER only.
-    Never types a contact name — avoids same-name collisions.
-    """
-    # Ctrl+F opens search in WhatsApp Desktop
-    pyautogui.hotkey("ctrl", "f")
-    time.sleep(0.8)
-    pyautogui.hotkey("ctrl", "a")
-    time.sleep(0.2)
-    pyautogui.press("backspace")
-    time.sleep(0.2)
-    _paste_text(phone)
-    time.sleep(2.0)
-    # Open first search result (the number match)
-    pyautogui.press("enter")
-    time.sleep(1.5)
-    # Ensure message compose box is focused (Tab / click chat area)
-    pyautogui.press("escape")  # close search panel if still open
-    time.sleep(0.4)
-    # Click roughly into message input area (bottom center of primary screen)
+def _open_chat_by_protocol(digits: str):
+    uri = f"whatsapp://send?phone={digits}"
+    print(f"[WhatsApp] Opening chat via {uri}")
     try:
-        sw, sh = pyautogui.size()
-        pyautogui.click(sw // 2, int(sh * 0.92))
-        time.sleep(0.4)
-    except Exception:
-        pass
+        os.startfile(uri)
+        return
+    except Exception as exc:
+        print(f"[WhatsApp] os.startfile protocol failed: {exc}")
+    subprocess.Popen(f'start "" "{uri}"', shell=True)
 
 
-def prepare_whatsapp_message(name_or_number: str, message: str, number: str = ""):
+def _composer_point():
+    """Message box sits just above the taskbar in the chat pane."""
+    sw, sh = pyautogui.size()
+    return int(sw * 0.50), int(sh - 88)
+
+
+def _send_point():
+    sw, sh = pyautogui.size()
+    return int(sw - 58), int(sh - 88)
+
+
+def _click_composer(info: dict = None):
+    x, y = _composer_point()
+    print(f"[WhatsApp] Clicking composer at ({x}, {y})")
+    pyautogui.click(x, y)
+    time.sleep(0.25)
+
+
+def _click_send_button(info: dict = None):
+    x, y = _send_point()
+    print(f"[WhatsApp] Clicking send at ({x}, {y})")
+    pyautogui.click(x, y)
+    time.sleep(0.25)
+
+
+def _composer_band_image():
+    sw, sh = pyautogui.size()
+    left = int(sw * 0.28)
+    top = int(sh - 130)
+    width = int(sw * 0.71)
+    height = 80
+    return pyautogui.screenshot(region=(left, top, width, height))
+
+
+def _images_differ(before, after, threshold: float = 1.8) -> bool:
+    import numpy as np
+    a = np.asarray(before, dtype=np.int16)
+    b = np.asarray(after, dtype=np.int16)
+    if a.shape != b.shape:
+        return True
+    return float(np.mean(np.abs(a - b))) > threshold
+
+
+def _clear_and_type(message: str):
+    pyautogui.hotkey("ctrl", "a")
+    time.sleep(0.08)
+    pyautogui.press("backspace")
+    time.sleep(0.12)
+    _paste_text(message)
+    time.sleep(0.35)
+
+
+def _type_into_composer(message: str, empty_band, click_first: bool = False):
+    if click_first:
+        _click_composer()
+    _clear_and_type(message)
+    typed_band = _composer_band_image()
+    if _images_differ(empty_band, typed_band):
+        return True, typed_band
+    print("[WhatsApp] Composer pixels did not change after typing")
+    return False, typed_band
+
+
+def _search_chat_by_number(phone: str):
+    """In-app number search if the protocol did not land in the chat composer."""
+    print(f"[WhatsApp] Searching in-app for {phone}")
+    pyautogui.hotkey("ctrl", "f")
+    time.sleep(0.6)
+    pyautogui.hotkey("ctrl", "a")
+    pyautogui.press("backspace")
+    _paste_text(phone)
+    time.sleep(1.3)
+    pyautogui.press("enter")
+    time.sleep(0.8)
+    pyautogui.press("escape")
+    time.sleep(0.35)
+
+
+def prepare_whatsapp_message(name_or_number: str, message: str = "", number: str = ""):
     """
-    Open WhatsApp → search by PHONE NUMBER → open chat → type message.
-    Does NOT press Enter / send. Caller must confirm before send.
+    Open WhatsApp, wait until it loads, open the saved contact's chat,
+    clear the message box, type the message, and send it.
     """
+    _ensure_dpi_aware()
     ok, phone, label, err = resolve_whatsapp_number(name_or_number, number)
     if not ok:
         return False, err
 
-    project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
-    recordings_dir = os.path.join(project_dir, "whatsapp recordings")
-    os.makedirs(recordings_dir, exist_ok=True)
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (label or phone))
-    video_path = os.path.join(recordings_dir, f"draft_message_to_{safe}.mp4")
+    digits = re.sub(r"\D", "", phone)
+    msg_text = (message or "").strip()
+    print(f"[WhatsApp] Target: {label} ({digits}), Message: '{msg_text}'")
 
-    recorder = ScreenRecorder(video_path, fps=8.0)
-    recorder.start()
-    success, msg = False, ""
     try:
-        open_whatsapp()
-        time.sleep(4)
-
-        print(f"[WhatsApp] Searching by NUMBER only: {phone} (label={label})")
-        _focus_whatsapp_search_and_type_number(phone)
-
-        if message and message.strip():
-            _paste_text(message.strip())
-            time.sleep(0.4)
-            # Intentionally do NOT press Enter — wait for user confirmation
-            success, msg = True, (
-                f"Draft ready for {label} ({phone}). "
-                f"Message typed in the chat: \"{message.strip()}\". "
-                "Should I send it? Say yes, ok, or send to deliver — or no to cancel."
-            )
+        launched = False
+        if not _whatsapp_pids():
+            print("[WhatsApp] Opening Desktop app...")
+            opened, open_msg = open_whatsapp()
+            if not opened:
+                return False, open_msg
+            launched = True
         else:
-            success, msg = True, (
-                f"Opened WhatsApp chat for {label} by number {phone}. "
-                "No message body was provided."
-            )
-    except Exception as e:
-        success, msg = False, f"Failed to prepare WhatsApp message: {str(e)}"
-    finally:
-        time.sleep(1.5)
-        recorder.stop()
+            print("[WhatsApp] Desktop app already running.")
 
-    return success, msg
+        print("[WhatsApp] Waiting until WhatsApp has loaded...")
+        print(f"[WhatsApp] Screen size for clicks: {pyautogui.size()}")
+        _wait_for_whatsapp_window(timeout=30.0 if launched else 10.0, focus=True)
+
+        print(f"[WhatsApp] Loading chat for {label}...")
+        _open_chat_by_protocol(digits)
+        time.sleep(3.8 if launched else 3.0)
+        # Do not Alt-focus after the protocol: it already focuses the composer.
+        info = _wait_for_whatsapp_window(timeout=12.0, focus=False)
+        time.sleep(0.4)
+
+        if not msg_text:
+            return True, f"Opened WhatsApp chat for {label}, sir."
+
+        # Protocol focuses the composer. Do not click first — a DPI-wrong
+        # click steals focus into the taskbar or chat list.
+        print(f"[WhatsApp] Clearing input and typing: '{msg_text}'")
+        empty_band = _composer_band_image()
+        typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=False)
+        if not typed:
+            print("[WhatsApp] Protocol focus missed the box; clicking composer...")
+            typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=True)
+        if not typed:
+            print("[WhatsApp] Chat composer was not ready; searching by number...")
+            _focus_hwnd(info["hwnd"])
+            _search_chat_by_number(digits)
+            info = _wait_for_whatsapp_window(timeout=8.0)
+            _focus_hwnd(info["hwnd"])
+            time.sleep(0.5)
+            empty_band = _composer_band_image()
+            typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=True)
+        if not typed:
+            return False, (
+                "WhatsApp opened and the chat was requested, but the message box "
+                "did not accept the text."
+            )
+
+        print("[WhatsApp] Clicking the send button...")
+        _click_send_button()
+        time.sleep(0.8)
+        sent_band = _composer_band_image()
+        if not _images_differ(typed_band, sent_band, threshold=2.5):
+            print("[WhatsApp] Send button did not clear the box; pressing Enter...")
+            pyautogui.press("enter")
+            time.sleep(0.8)
+            sent_band = _composer_band_image()
+        if not _images_differ(typed_band, sent_band, threshold=2.5):
+            return False, (
+                "WhatsApp send could not be verified: the message box still looks typed."
+            )
+        return True, "WhatsApp message sent, sir."
+    except Exception as e:
+        print(f"[WhatsApp] Error: {e}")
+        return False, f"Failed to send WhatsApp message: {str(e)}"
 
 
 def confirm_send_whatsapp_message():
-    """Press Enter in the focused WhatsApp compose box to send the drafted message."""
+    """Retry the last saved WhatsApp request instead of blindly pressing Enter."""
     try:
-        open_whatsapp()
-        time.sleep(1.0)
-        # Refocus message box
-        try:
-            sw, sh = pyautogui.size()
-            pyautogui.click(sw // 2, int(sh * 0.92))
-            time.sleep(0.3)
-        except Exception:
-            pass
-        pyautogui.press("enter")
-        time.sleep(0.5)
-        return True, "Message sent, sir."
+        from brain.memory import get_memory
+        pending = get_memory("pending_whatsapp") or {}
+        last = get_memory("last_whatsapp_request") or {}
+        src = pending if (pending or {}).get("message") else last
+        name = (src or {}).get("name") or (src or {}).get("contact") or ""
+        number = (src or {}).get("number") or ""
+        message = (src or {}).get("message") or ""
+        if not message or not (name or number):
+            return False, "There is no WhatsApp message waiting to be sent, sir."
+        return prepare_whatsapp_message(name, message, number)
     except Exception as e:
         return False, f"Failed to send WhatsApp message: {str(e)}"
 
 
 def cancel_whatsapp_draft():
-    """Clear the drafted message text in the compose box without sending."""
+    """Cancel a queued WhatsApp send without sending keystrokes into a random window."""
     try:
-        open_whatsapp()
-        time.sleep(0.8)
-        try:
-            sw, sh = pyautogui.size()
-            pyautogui.click(sw // 2, int(sh * 0.92))
-            time.sleep(0.3)
-        except Exception:
-            pass
-        pyautogui.hotkey("ctrl", "a")
-        time.sleep(0.15)
-        pyautogui.press("backspace")
-        return True, "Draft cancelled. Message was not sent, sir."
+        from brain.memory import save_memory
+        save_memory("pending_whatsapp", None)
+        save_memory("last_whatsapp_request", None)
+        return True, "WhatsApp send cancelled. Nothing was sent, sir."
     except Exception as e:
-        return False, f"Could not clear draft: {str(e)}"
+        return False, f"Could not cancel the WhatsApp send: {str(e)}"
 
 
-def send_whatsapp_message(name, message, number: str = "", auto_send: bool = False):
-    """
-    WhatsApp messaging entrypoint.
-
-    Default (auto_send=False): search by NUMBER, open chat, type message, DO NOT send.
-    auto_send=True: legacy immediate send (discouraged).
-    """
-    if not auto_send:
-        return prepare_whatsapp_message(name, message, number=number)
-
-    ok, phone, label, err = resolve_whatsapp_number(name, number)
-    if not ok:
-        return False, err
-
-    success, msg = prepare_whatsapp_message(label, message, number=phone)
-    if not success:
-        return False, msg
-    return confirm_send_whatsapp_message()
+def send_whatsapp_message(name, message, number: str = "", auto_send: bool = True):
+    """WhatsApp messaging entrypoint — resolve number, open chat, type and send."""
+    return prepare_whatsapp_message(name, message, number=number)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SEARCH & LOGGING AUTOMATION FLOWS

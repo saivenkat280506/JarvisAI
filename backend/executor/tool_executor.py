@@ -17,6 +17,7 @@ NO_SEARCH_FALLBACK_INTENTS = {
     "cancel_task", "music_control", "volume_control",
     "play_local_music", "daddys_home", "play_youtube_music", "play_youtube_search", "play_spotify",
     "open_app", "send_whatsapp", "confirm_whatsapp_send", "cancel_whatsapp_send",
+    "calculate",
     "joke", "news", "greeting",
     "spotify_login", "browser_action", "browser_scroll_test",
     "browser_click", "browser_type", "browser_scroll", "browser_navigate",
@@ -59,14 +60,6 @@ async def execute_tool(action_json: dict, background: bool = False):
                 # Log the actual error internally
                 log_error(intent, Exception(result))
                 
-                # --- Failure Recovery Logic ---
-                if intent == "send_whatsapp":
-                    print("[Executor] WhatsApp send failed. Falling back to opening app.")
-                    from executor.open_app import open_app
-                    f_success, f_msg = await asyncio.to_thread(open_app, "whatsapp")
-                    if f_success:
-                        return True, "I couldn't send the message automatically, but I've opened WhatsApp for you."
-                
                 if intent not in NO_SEARCH_FALLBACK_INTENTS:
                     print("[Executor] Tool failed. Falling back to browser search.")
                     from executor.automation import search_google
@@ -94,4 +87,3 @@ async def execute_tool(action_json: dict, background: bool = False):
         return True, f"Task started in background (ID: {task_id})."
     else:
         return await _run()
-

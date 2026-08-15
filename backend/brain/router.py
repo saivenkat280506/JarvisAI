@@ -8,6 +8,7 @@ Intent catalogue includes Puppeteer browser tools (zero LLM latency when matched
 """
 
 import re
+from difflib import get_close_matches
 
 _WAKE_PREFIXES = (
     "hey jarvis", "hi jarvis", "hello jarvis",
@@ -19,9 +20,25 @@ _GREETING_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TIMEZONE_ALIASES = {
+    "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo",
+    "london": "Europe/London", "uk": "Europe/London",
+    "new york": "America/New_York", "newyork": "America/New_York",
+    "los angeles": "America/Los_Angeles", "california": "America/Los_Angeles",
+    "dubai": "Asia/Dubai", "singapore": "Asia/Singapore",
+    "mumbai": "Asia/Kolkata", "delhi": "Asia/Kolkata", "india": "Asia/Kolkata",
+    "utc": "UTC", "gmt": "Etc/GMT",
+}
+
 
 def _strip_wake_prefix(text: str) -> str:
     cleaned = text.lower().strip().rstrip(".?!, ")
+    # Common speech/transcription spelling of WhatsApp.
+    cleaned = re.sub(
+        r"\bwhat(?:s|ts|tz)?\s*app\b|\bwatsapp\b|\bwatsap\b|\bwhatsap\b",
+        "whatsapp",
+        cleaned,
+    )
     for prefix in _WAKE_PREFIXES:
         if cleaned == prefix:
             return ""
@@ -45,7 +62,8 @@ def _split_contact_and_message(rest: str) -> tuple:
         num = re.sub(r"\s+", "", phone_m.group(1))
         return num, phone_m.group(2).strip().strip("\"'")
 
-    # Known contacts (longest match first)
+    # Known contacts (longest match first). Allow natural punctuation after a
+    # contact name: "Satish, hi" / "Satish. Bye".
     contacts = {}
     try:
         from executor.automation import _load_whatsapp_contacts
@@ -55,18 +73,51 @@ def _split_contact_and_message(rest: str) -> tuple:
     lower = rest.lower()
     best = ""
     for name in sorted(contacts.keys(), key=len, reverse=True):
-        if lower == name or lower.startswith(name + " "):
+        if lower == name or re.match(rf"^{re.escape(name)}(?:\s|[,.:;-])", lower):
             if len(name) > len(best):
                 best = name
     if best:
-        msg = rest[len(best):].strip().strip("\"'")
+        # The separator is often spoken as a pause and transcribed as a dot:
+        # "Satish. Bye" should produce "Bye", not ". Bye".
+        msg = rest[len(best):].lstrip(" \t,.:;-").strip("\"'")
+        msg = _strip_trailing_contact(msg, best)
         return best, msg
+
+    # Tolerate common STT spelling differences (for example Satish/Sathish)
+    # while still requiring one unique saved-contact match.
+    first_token = re.split(r"[\s,.:;-]+", lower, maxsplit=1)[0]
+    fuzzy = get_close_matches(first_token, contacts.keys(), n=3, cutoff=0.55)
+    if fuzzy:
+        unique_names = set(fuzzy)
+        if len(unique_names) == 1 or _same_saved_number(contacts, fuzzy):
+            name = fuzzy[0]
+            msg = rest[len(first_token):].lstrip(" \t,.:;-").strip("\"'")
+            msg = _strip_trailing_contact(msg, name)
+            return name, msg
 
     # Default: first word = contact, remainder = message
     parts = rest.split(None, 1)
     if len(parts) == 1:
         return parts[0], ""
-    return parts[0], parts[1].strip().strip("\"'")
+    return parts[0], _strip_trailing_contact(parts[1].strip().strip("\"'"), parts[0])
+
+
+def _same_saved_number(contacts: dict, names: list) -> bool:
+    phones = {str(contacts.get(n, "")).strip() for n in names if contacts.get(n)}
+    return len(phones) == 1
+
+
+def _strip_trailing_contact(message: str, contact: str) -> str:
+    """Drop an STT echo of the contact name at the end: 'hi. satish' -> 'hi'."""
+    if not message or not contact:
+        return message
+    cleaned = re.sub(
+        rf"[\s,.:;-]+{re.escape(contact)}\s*$",
+        "",
+        message,
+        flags=re.IGNORECASE,
+    ).strip(" \t,.:;-\"'")
+    return cleaned
 
 
 def route_command(text: str):
@@ -121,6 +172,25 @@ def route_command(text: str):
         ):
             return "cancel_whatsapp_send", {}
 
+    # An automation failure leaves the request in memory so the user can say
+    # "try again" without repeating a long voice command.
+    retry_request = None
+    try:
+        from brain.memory import get_memory
+        retry_request = get_memory("last_whatsapp_request")
+    except Exception:
+        pass
+    if retry_request and re.search(
+        r"\b(?:try\s+again|retry|resend|send\s+(?:it\s+)?again|one\s+more\s+time)\b",
+        text_clean,
+        re.IGNORECASE,
+    ):
+        return "send_whatsapp", {
+            "name": retry_request.get("name", ""),
+            "number": retry_request.get("number", ""),
+            "message": retry_request.get("message", ""),
+        }
+
     # Phone number pattern: +91 85199 29108 / 8519929108 / +918519929108
     _phone = r"(\+?\d[\d\s\-()]{7,}\d)"
 
@@ -151,6 +221,49 @@ def route_command(text: str):
             "message": wa_search_msg_num.group(2).strip().strip("\"'"),
         }
 
+    # Natural spoken forms: "open WhatsApp and send Satish hi" and
+    # "WhatsApp send Satish hi". Resolve the contact from the saved contacts
+    # list so the message body can contain multiple words.
+    wa_direct_send = re.search(
+        r"(?:open\s+)?whatsapp\s+(?:and\s+)?send\s+"
+        r"(?:a\s+)?(?:message\s+)?(?:to\s+)?(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if wa_direct_send:
+        contact, message = _split_contact_and_message(wa_direct_send.group(1))
+        if contact:
+            return "send_whatsapp", {"name": contact, "message": message}
+
+    # "search for Satish and send him hi" is still an explicit WhatsApp
+    # request when it names a saved contact; don't let it fall through to the
+    # generic web-search LLM route.
+    wa_search_then_send = re.search(
+        r"(?:open\s+)?(?:whatsapp\s+and\s+)?search\s+for\s+(.+?)\s+"
+        r"and\s+send\s+(?:him|her|a\s+message\s+to)\s+(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if wa_search_then_send:
+        contact = wa_search_then_send.group(1).strip().strip(".,:;- ")
+        message = wa_search_then_send.group(2).strip().strip("\"'")
+        if contact and message:
+            return "send_whatsapp", {"name": contact, "message": message}
+
+    # Compact spoken form: "send Satish hi" / "text Sathish hello".
+    # Only claim this route when the first part resolves to a saved contact;
+    # ordinary "send ..." requests remain available to the general router.
+    compact_send = re.match(r"^(?:send|text)\s+(.+)$", text_clean, re.IGNORECASE)
+    if compact_send:
+        contact, message = _split_contact_and_message(compact_send.group(1))
+        try:
+            from executor.automation import _load_whatsapp_contacts
+            saved_contacts = _load_whatsapp_contacts()
+        except Exception:
+            saved_contacts = {}
+        if contact.lower() in saved_contacts and message:
+            return "send_whatsapp", {"name": contact, "message": message}
+
     # Matches: "open whatsapp and search for vaasavi and send message hi iam jarvis"
     # Prefer resolving name→number later; still pass name for contact lookup
     wa_search_msg = re.search(
@@ -168,19 +281,32 @@ def route_command(text: str):
             params["name"] = target
         return "send_whatsapp", params
 
-    # Matches: "open whatsapp and search [for] +91..." / name
+    # Matches: "open whatsapp and search [for] +91..." / "open whatsapp for sathish"
     wa_search = re.search(
-        r"(?:open\s+)?whatsapp\s+(?:and\s+)?search\s+(?:for\s+)?(.+)$",
+        r"(?:open\s+)?whatsapp\s+(?:(?:and\s+)?search\s+(?:for\s+)?|for\s+|to\s+)(.+)$",
         text,
         re.IGNORECASE,
     )
     if wa_search:
         target = wa_search.group(1).strip().rstrip(".!?")
-        # strip trailing "and send..." already handled above
-        if re.search(r"\d{8,}", target):
-            num = re.sub(r"\s+", "", target)
-            return "send_whatsapp", {"number": num, "name": num, "message": ""}
-        return "send_whatsapp", {"name": target, "message": ""}
+        if target.lower() not in ("app", "desktop", "application"):
+            if re.search(r"\d{8,}", target):
+                num = re.sub(r"\s+", "", target)
+                return "send_whatsapp", {"number": num, "name": num, "message": ""}
+            return "send_whatsapp", {"name": target, "message": ""}
+
+    # Bare "whatsapp sathish" — never treat "and send ..." as a contact name.
+    wa_bare = re.search(r"(?:open\s+)?whatsapp\s+(.+)$", text, re.IGNORECASE)
+    if wa_bare:
+        target = wa_bare.group(1).strip().rstrip(".!?")
+        if (
+            target.lower() not in ("app", "desktop", "application")
+            and not re.match(r"(?:and\s+)?(?:send|search)\b", target, re.I)
+        ):
+            if re.search(r"\d{8,}", target):
+                num = re.sub(r"\s+", "", target)
+                return "send_whatsapp", {"number": num, "name": num, "message": ""}
+            return "send_whatsapp", {"name": target, "message": ""}
 
     # "send message to sathish: hello" / "whatsapp message to X: body"
     msg_colon = re.search(
@@ -407,13 +533,35 @@ def route_command(text: str):
         if len(app_name.split()) <= 3 and " and " not in app_name:
             return "open_app", {"app": app_name}
 
+    # 4a. Intent: calculator — tolerate filler words between the request and
+    # the arithmetic, e.g. "calculate and zilk semi what is 57 plus 85".
+    calc_match = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*(plus|\+|minus|-|times|\*|x|"
+        r"multiplied\s+by|divided\s+by|/|over)\s*"
+        r"(\d+(?:\.\d+)?)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if calc_match and re.search(r"\b(?:calculate|compute|what\s+is|how\s+much)\b", text, re.I):
+        return "calculate", {
+            "left": calc_match.group(1),
+            "operator": calc_match.group(2).lower(),
+            "right": calc_match.group(3),
+        }
+
     # 4b. Intent: time — before news (LLM often confuses "right now" with headlines)
-    if re.search(
+    time_match = re.search(
         r"\b(?:what(?:'s|\s+is)\s+(?:the\s+)?time|what\s+time\s+is\s+it|current\s+time|tell\s+me\s+the\s+time)\b",
         text,
         re.IGNORECASE,
-    ):
-        return "time", {}
+    )
+    if time_match:
+        timezone = None
+        location = re.search(r"\b(?:in|at|for)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b", text, re.I)
+        if location:
+            city = location.group(1).lower().strip()
+            timezone = _TIMEZONE_ALIASES.get(city)
+        return "time", {"timezone": timezone} if timezone else {}
 
     # 5. Intent: news / headlines (must be checked BEFORE search_browser)
     if any(k in text for k in ["news", "headlines", "latest news", "what's happening", "top stories", "news summary", "headlines summary", "read summary"]):

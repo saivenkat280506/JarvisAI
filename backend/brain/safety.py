@@ -12,7 +12,7 @@ ALLOWED_INTENTS = [
     "play_youtube_search", "play_spotify", "music_control", "volume_control", "search_browser",
     "cancel_task", "chat", "greeting", "capabilities", "news", "joke",
     "qa", "intro", "focus_window", "web_agent", "smart_search", "read_headlines",
-    "time",
+    "time", "calculate",
     # Puppeteer browser automation (wired end-to-end)
     "spotify_login", "browser_action", "browser_scroll_test",
     "browser_click", "browser_type", "browser_scroll", "browser_navigate",

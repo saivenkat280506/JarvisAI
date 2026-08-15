@@ -33,7 +33,7 @@ SYSTEM_PROMPT = """You map user text to ONE JARVIS tool intent. Return ONLY JSON
 {"intent":"...","parameters":{...}}
 
 BROWSER (Puppeteer — preferred for web/music UI):
-- play_youtube_music {"song":"..."}  — play any song (default for "play X")
+- play_youtube_music {"song":"..."} — ONLY if user explicitly asks to play a song/music (e.g., "play X")
 - play_youtube_search {"song":"..."} — same as music (legacy)
 - browser_scroll_test {} — "scroll test" / "scroll speed test"
 - search_browser {"query":"..."} — "search for X" / "google X" (opens browser + scroll)
@@ -48,7 +48,7 @@ BROWSER (Puppeteer — preferred for web/music UI):
 
 OTHER:
 - open_app {"app":"..."}
-- send_whatsapp {"name":"...","message":"...","number":"+91..."} — ALWAYS include phone number when known; WhatsApp searches by NUMBER only (never name) to avoid same-name confusion. Drafts message and asks user to confirm before send.
+- send_whatsapp {"name":"...","message":"..."} — use the spoken contact name only. NEVER invent a phone number. NEVER output placeholders such as "+91...". Omit number unless the user said a full real number. Sends immediately; do not draft.
 - confirm_whatsapp_send {} — user said yes/ok/send after a draft
 - cancel_whatsapp_send {} — user said no/cancel after a draft
 - play_local_music {} — "play music" / "play garage music" (local garage track)
@@ -57,7 +57,7 @@ OTHER:
 - read_headlines {"query":"..."} / smart_search {"query":"..."}  (text only, no browser)
 - chat / joke / intro / qa / cancel_task / web_agent
 
-Rules: Prefer play_youtube_music for play requests. Prefer search_browser for "search/google in browser". Prefer smart_search for "what is". No markdown.
+Rules: ONLY select play_youtube_music if the user explicitly asks to play music or a song (e.g. "play X"). NEVER select play_youtube_music for general statements, comments, or remarks (e.g. "this was the command code") — route those to "chat" with {"response":""}. No markdown.
 """
 
 

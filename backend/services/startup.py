@@ -8,6 +8,12 @@ and Puppeteer control-plane warm-start (low latency first browser cmd).
 import asyncio
 
 
+async def _delayed_warmups():
+    """Let the API/UI become responsive before expensive optional warmups."""
+    await asyncio.sleep(5)
+    await asyncio.gather(_warm_up_tts(), _warm_puppeteer())
+
+
 def _start_process_monitor():
     try:
         from executor.process_monitor import start_process_monitor
@@ -45,5 +51,7 @@ async def start_all_services():
     from services.voice_loop import voice_command_loop
     asyncio.create_task(voice_command_loop())
 
-    asyncio.create_task(_warm_up_tts())
-    asyncio.create_task(_warm_puppeteer())
+    # These are optional latency optimizations, not startup requirements. A
+    # concurrent model load plus Puppeteer startup can starve the first STT
+    # request and make a fresh launch appear hung.
+    asyncio.create_task(_delayed_warmups())

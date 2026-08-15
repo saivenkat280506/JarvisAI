@@ -71,13 +71,15 @@ class VoiceWorker(QObject):
         self._active = True
         try:
             from stt.stt_continuous import STT
-            # Use 700ms silence so we get partial chunks fast, and aggregate them in the GUI thread
+            # Tiny Whisper keeps the desktop voice worker responsive on a
+            # fresh launch; the command pipeline handles final correction.
             self.stt = STT(
                 on_text=self._on_txt,
                 on_recording_start=lambda: self.state_changed.emit("listening"),
                 on_recording_stop=lambda: self.state_changed.emit("thinking"),
                 config={
-                    "silence_ms": 700, 
+                    "model_size": "tiny.en",
+                    "silence_ms": 700,
                     "min_speech_ms": 300,
                 }
             )

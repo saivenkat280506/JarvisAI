@@ -61,7 +61,7 @@ async def _run_wake_detector():
     while not is_shutting_down():
         try:
             if flags.continuous_voice_mode or flags.voice_session_active:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.05)
                 continue
 
             def check_trigger():
@@ -115,7 +115,7 @@ async def _wait_until_ready_to_listen():
         if ready:
             # Brief pause after TTS so the mic does not pick up speaker echo
             if tts_was_active:
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(0.6)
             return
         await asyncio.sleep(0.5)
 

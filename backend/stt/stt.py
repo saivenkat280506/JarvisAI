@@ -31,10 +31,11 @@ FRAME_DURATION = 30  # ms
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)  # 480 samples
 VAD_MODE = 1  # 0-3 (1 = balanced; 3 was clipping words)
 
-SILENCE_LIMIT_FRAMES = 70     # 70 * 30ms = 2.1s silence ends command
+SILENCE_LIMIT_FRAMES = 40     # 1.2s silence ends command
 INITIAL_TIMEOUT_FRAMES = 200  # 200 * 30ms = 6s no-speech timeout
-PARTIAL_INTERVAL = 1.0        # Emit partial every 1s (less noise on early audio)
-MIN_PARTIAL_FRAMES = 40       # Need ~1.2s speech before partial Groq call
+PARTIAL_INTERVAL = 2.0        # Avoid repeated network transcription calls
+MIN_PARTIAL_FRAMES = 60       # Need ~1.8s speech before a partial call
+MAX_PARTIAL_TRANSCRIPTIONS = 1  # One preview; final transcription is authoritative
 MIN_SPEECH_FRAMES = 8         # Ignore clips shorter than ~240ms
 
 STT_PROMPT = (
@@ -183,7 +184,7 @@ def _get_model():
         try:
             from faster_whisper import WhisperModel
             print("[STT] Loading local fallback model (base.en)…")
-            _model = WhisperModel("base.en", device="cpu", compute_type="int8")
+            _model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
             print("[STT] Local fallback ready.")
         except Exception as e:
             print(f"[STT] Local fallback unavailable: {e}")
@@ -201,7 +202,7 @@ def transcribe_local(pcm_bytes: bytes) -> str:
     try:
         segments, _ = model.transcribe(
             audio_array,
-            beam_size=5,
+            beam_size=1,
             language="en",
             initial_prompt=STT_PROMPT,
             vad_filter=True,
@@ -245,6 +246,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
     last_ui_text = [""]
 
     def stt_worker():
+        partial_count = 0
         while True:
             item = audio_queue.get()
             if item["type"] == "quit":
@@ -281,8 +283,12 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
             # Skip partial Groq calls on very short audio — early partials are inaccurate
             if item["type"] == "partial" and len(audio_bytes) < MIN_PARTIAL_FRAMES * FRAME_SIZE * 2:
                 continue
+            if item["type"] == "partial" and partial_count >= MAX_PARTIAL_TRANSCRIPTIONS:
+                continue
 
             text = transcribe_audio(audio_bytes)
+            if item["type"] == "partial":
+                partial_count += 1
 
             if item["type"] == "partial":
                 current_countdown = item.get("countdown")

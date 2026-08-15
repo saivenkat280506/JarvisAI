@@ -23,7 +23,13 @@ def resolve_pronouns(text: str):
 
     # Resolve "it", "again", "that song", "play it" -> last_song
     # Use word-boundary check so "it" doesn't match inside "write", "bitcoin", etc.
-    if re.search(r"\b(?:it|again|that song|the same)\b", text_lower):
+    # Do not rewrite WhatsApp retries ("try again" / "send it again") as a song.
+    if re.search(
+        r"\b(?:try\s+again|resend|send\s+(?:it\s+)?again|one\s+more\s+time)\b",
+        text_lower,
+    ):
+        pass
+    elif re.search(r"\b(?:it|again|that song|the same)\b", text_lower):
         last_song = get_memory("last_song")
         if last_song:
             resolved_params["song"] = last_song

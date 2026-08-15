@@ -7,6 +7,8 @@ Clean separation of API endpoints from core logic.
 import os
 import json
 import subprocess
+import io
+import wave
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
@@ -23,6 +25,20 @@ def _decode_upload_to_pcm(audio_bytes: bytes) -> bytes:
     """Decode uploaded audio into 16 kHz mono signed 16-bit PCM for STT."""
     if not audio_bytes:
         return b""
+
+    # Browser recordings are commonly PCM WAV already. Avoid spawning ffmpeg
+    # for this hot path; only resample/convert when the input needs it.
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+                channels = wav_file.getnchannels()
+                width = wav_file.getsampwidth()
+                rate = wav_file.getframerate()
+                frames = wav_file.readframes(wav_file.getnframes())
+            if channels == 1 and width == 2 and rate == 16000:
+                return frames
+        except wave.Error:
+            pass
 
     result = subprocess.run(
         [
@@ -271,7 +287,13 @@ async def reset_endpoint():
         print(f"[Reset] Error clearing memory: {exc}")
 
     try:
-        os.system("taskkill /f /im WhatsApp.exe")
+        for exe in ("WhatsApp.exe", "WhatsApp.Root.exe"):
+            subprocess.run(
+                ["taskkill", "/f", "/im", exe],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
     except Exception as exc:
         print(f"[Reset] WhatsApp taskkill error: {exc}")
 
