@@ -3,7 +3,7 @@
 **Date:** 2026-08-15  
 **Label:** `jarvis-snapshot-2026-08-15`  
 **Git tag:** `jarvis-snapshot-2026-08-15`  
-**Commit:** *(filled in immediately after this snapshot is committed)*
+**Commit:** `8f822a4976facd259b3b12d44b7c6c616da39436`
 
 This is a known-good restore point **before** the memory-database / performance integration pass.
 
