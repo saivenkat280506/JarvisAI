@@ -17,7 +17,7 @@ def _load_memory():
         try:
             with open(MEMORY_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     return {"history": [], "last_contact": None, "last_song": None, "last_whatsapp_request": None}
 

@@ -23,6 +23,21 @@ RESPONSE_MAP = {
         "success": ["WhatsApp message sent, sir."],
         "fail": ["Could not open WhatsApp contact, sir."]
     },
+    "send_whatsapp_all": {
+        "start": ["Sending to saved contacts only, sir."],
+        "success": ["Sent to the saved contacts, sir."],
+        "fail": ["I could not finish sending to every saved contact, sir."]
+    },
+    "remember": {
+        "start": ["Saving that, sir."],
+        "success": ["Noted, sir."],
+        "fail": ["I could not save that, sir."]
+    },
+    "recall": {
+        "start": ["Checking memory, sir."],
+        "success": ["Here it is, sir."],
+        "fail": ["I do not have that saved, sir."]
+    },
     "confirm_whatsapp_send": {
         "start": ["Sending now, sir."],
         "success": ["Message sent, sir.", "Delivered, sir.", "Transmission complete, sir."],

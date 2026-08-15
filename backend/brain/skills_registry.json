@@ -39,7 +39,7 @@
   },
   {
     "name": "whatsapp_send_message",
-    "description": "Send a WhatsApp message to a contact using WhatsApp Desktop or Web.",
+    "description": "Send a WhatsApp message to one saved contact, or to all saved individual contacts if the user said all contacts. Never groups.",
     "trigger": ["whatsapp", "send message", "message"],
     "inputs": ["contact", "message"],
     "execution": "system_command"

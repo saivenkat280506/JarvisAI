@@ -63,5 +63,12 @@ def get_current_context():
         context_parts.append(f"Last contacted person: {last_contact}")
     if last_song:
         context_parts.append(f"Last played song/artist: {last_song}")
+    try:
+        from brain.memory_store import context_snippet
+        snippet = context_snippet()
+        if snippet:
+            context_parts.append(snippet[:400])
+    except Exception:
+        pass
         
     return " | ".join(context_parts) if context_parts else "No recent context available."

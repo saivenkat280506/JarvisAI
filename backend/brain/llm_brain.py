@@ -48,7 +48,9 @@ BROWSER (Puppeteer — preferred for web/music UI):
 
 OTHER:
 - open_app {"app":"..."}
-- send_whatsapp {"name":"...","message":"..."} — use the spoken contact name only. NEVER invent a phone number. NEVER output placeholders such as "+91...". Omit number unless the user said a full real number. Sends immediately; do not draft.
+- send_whatsapp {"name":"...","message":"..."} — use the spoken contact name only. NEVER invent a phone number. NEVER output placeholders such as "+91...". Omit number unless the user said a full real number. NEVER use name "all", "everyone", or a group. Sends immediately; do not draft.
+- send_whatsapp_all {"message":"..."} — ONLY if the user said "all contacts" / "every contact". Never groups, never everyone on WhatsApp. Message required.
+- remember {"text":"..."} / recall {"query":"..."} / add_task {"title":"..."} / list_tasks {} / complete_task {"query":"..."} — local memory, no web search.
 - confirm_whatsapp_send {} — user said yes/ok/send after a draft
 - cancel_whatsapp_send {} — user said no/cancel after a draft
 - play_local_music {} — "play music" / "play garage music" (local garage track)

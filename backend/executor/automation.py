@@ -355,16 +355,26 @@ def _focus_browser_window():
 
 
 def _load_whatsapp_contacts() -> dict:
-    """name(lower) -> E.164-ish phone number string."""
+    """name(lower) -> phone. JSON file plus DB allowlist; never groups."""
+    contacts: dict[str, str] = {}
+    try:
+        from brain.memory_store import whatsapp_allowlist
+        contacts.update(whatsapp_allowlist())
+    except Exception:
+        pass
     try:
         if os.path.exists(_CONTACTS_PATH):
             with open(_CONTACTS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                return {str(k).strip().lower(): str(v).strip() for k, v in data.items() if v}
+                for key, val in data.items():
+                    name = str(key).strip().lower()
+                    phone = str(val).strip()
+                    if name and phone:
+                        contacts[name] = phone
     except Exception as e:
         print(f"[WhatsApp] Failed to load contacts: {e}")
-    return {}
+    return contacts
 
 
 def normalize_phone_number(value: str) -> str:
@@ -418,6 +428,19 @@ def resolve_whatsapp_number(name_or_number: str, number: str = "") -> tuple:
     target = (name_or_number or "").strip()
     if not target:
         return False, "", "", "No contact or phone number provided."
+
+    blocked = {
+        "all", "everyone", "everybody", "group", "the group",
+        "broadcast", "all contacts", "every contact", "each contact",
+        "my contacts", "saved contacts",
+    }
+    if target.lower() in blocked or re.search(
+        r"\b(?:group|everyone|everybody|broadcast)\b", target, re.I
+    ):
+        return False, "", target, (
+            "I will not send to groups, everyone on WhatsApp, or an unnamed chat. "
+            "Name a saved contact, or say 'all contacts' with an explicit message."
+        )
 
     if looks_like_phone_number(target):
         phone = normalize_phone_number(target)
@@ -680,9 +703,11 @@ def confirm_send_whatsapp_message():
         pending = get_memory("pending_whatsapp") or {}
         last = get_memory("last_whatsapp_request") or {}
         src = pending if (pending or {}).get("message") else last
+        message = (src or {}).get("message") or ""
+        if (src or {}).get("all_contacts") and message:
+            return send_whatsapp_to_saved_contacts(message)
         name = (src or {}).get("name") or (src or {}).get("contact") or ""
         number = (src or {}).get("number") or ""
-        message = (src or {}).get("message") or ""
         if not message or not (name or number):
             return False, "There is no WhatsApp message waiting to be sent, sir."
         return prepare_whatsapp_message(name, message, number)
@@ -704,6 +729,49 @@ def cancel_whatsapp_draft():
 def send_whatsapp_message(name, message, number: str = "", auto_send: bool = True):
     """WhatsApp messaging entrypoint — resolve number, open chat, type and send."""
     return prepare_whatsapp_message(name, message, number=number)
+
+
+def send_whatsapp_to_saved_contacts(message: str) -> tuple:
+    """
+    Send one message to every WhatsApp-allowed saved individual.
+    Never uses the open chat, never groups, never unsaved numbers.
+    """
+    msg = (message or "").strip()
+    if not msg:
+        return False, "I need the message text before I send to saved contacts, sir."
+    try:
+        from brain.memory_store import unique_whatsapp_targets
+        targets = unique_whatsapp_targets()
+    except Exception:
+        contacts = _load_whatsapp_contacts()
+        seen = {}
+        for name, phone in contacts.items():
+            if phone and phone not in seen:
+                seen[phone] = name
+        targets = [(name, phone) for phone, name in seen.items()]
+
+    if not targets:
+        return False, "There are no saved individual WhatsApp contacts to message, sir."
+
+    sent = []
+    failed = []
+    for label, phone in targets:
+        print(f"[WhatsApp] All-contacts target {label} ({phone})")
+        ok, result = prepare_whatsapp_message(label, msg, number=phone)
+        if ok:
+            sent.append(label)
+        else:
+            failed.append(f"{label}: {result}")
+        time.sleep(1.6)
+
+    if sent and not failed:
+        return True, f"Sent to {len(sent)} saved contacts: {', '.join(sent)}, sir."
+    if sent and failed:
+        return False, (
+            f"Sent to {len(sent)} ({', '.join(sent)}), but failed for "
+            f"{len(failed)}: {'; '.join(failed)}"
+        )
+    return False, "Could not send to any saved contact. " + "; ".join(failed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SEARCH & LOGGING AUTOMATION FLOWS
