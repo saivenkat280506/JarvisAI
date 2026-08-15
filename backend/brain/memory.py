@@ -19,7 +19,7 @@ def _load_memory():
                 return json.load(f)
         except:
             pass
-    return {"history": [], "last_contact": None, "last_song": None}
+    return {"history": [], "last_contact": None, "last_song": None, "last_whatsapp_request": None}
 
 def save_memory(key, value):
     with _lock:

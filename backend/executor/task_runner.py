@@ -173,14 +173,9 @@ async def send_whatsapp(contact: str, message: str, number: str = "") -> str:
     from brain.memory import save_memory
     import asyncio
     success, msg = await asyncio.to_thread(prepare_whatsapp_message, contact, message, number)
-    if success and message and message.strip():
-        save_memory("pending_whatsapp", {
-            "contact": contact,
-            "number": number,
-            "message": message.strip(),
-            "awaiting_confirm": True,
-        })
+    if success:
         save_memory("last_contact", contact or number)
+        save_memory("pending_whatsapp", None)
     return msg
 
 def write_code(code: str, filename: str = "", language: str = "python") -> str:

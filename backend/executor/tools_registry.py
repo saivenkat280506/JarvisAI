@@ -41,10 +41,39 @@ from executor.browser_puppeteer import (
 from executor.automation import search_and_summarize_in_notepad
 
 
+def _calculate_tool(params: dict):
+    """Perform parsed arithmetic without eval()."""
+    left = float(params.get("left"))
+    right = float(params.get("right"))
+    operator = str(params.get("operator", "plus")).lower()
+    if operator in ("plus", "+"):
+        value = left + right
+    elif operator in ("minus", "-"):
+        value = left - right
+    elif operator in ("times", "*", "x", "multiplied by"):
+        value = left * right
+    elif operator in ("divided by", "/", "over"):
+        if right == 0:
+            return False, "I cannot divide by zero, sir."
+        value = left / right
+    else:
+        return False, "I could not identify that arithmetic operation, sir."
+    formatted = str(int(value)) if value.is_integer() else f"{value:.6g}"
+    return True, f"The result is {formatted}, sir."
+
+
+def _usable_whatsapp_number(number: str) -> str:
+    """Drop LLM placeholders such as '+91...' before they reach automation."""
+    raw = (number or "").strip()
+    if not raw or "..." in raw or "…" in raw:
+        return ""
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return raw if len(digits) >= 10 else ""
+
+
 def _send_whatsapp_tool(params: dict):
     """
-    Draft a WhatsApp message: always search by phone NUMBER, type text, do not send.
-    Stores pending confirmation state for yes/ok/send follow-up.
+    Open WhatsApp → wait for load → open the saved chat → clear → type → send.
     """
     name = (
         params.get("name")
@@ -52,39 +81,34 @@ def _send_whatsapp_tool(params: dict):
         or params.get("to")
         or ""
     )
-    number = params.get("number") or params.get("phone") or ""
+    number = _usable_whatsapp_number(params.get("number") or params.get("phone") or "")
     message = params.get("message") or params.get("text") or ""
-    # If name field itself is a number, treat as number
-    success, result = prepare_whatsapp_message(name, message, number=number)
-    if success and message and message.strip():
-        save_memory("pending_whatsapp", {
-            "contact": name,
-            "number": number,
-            "message": message.strip(),
-            "awaiting_confirm": True,
-        })
+    request = {"name": name, "number": number, "message": message}
+    save_memory("last_whatsapp_request", request)
+    save_memory("pending_whatsapp", None)
+    success, result = prepare_whatsapp_message(name, message=message, number=number)
+    if success:
         save_memory("last_contact", name or number)
+        save_memory("last_whatsapp_request", None)
     return success, result
 
 
 def _confirm_whatsapp_tool(params: dict = None):
     pending = get_memory("pending_whatsapp") or {}
-    if not pending.get("awaiting_confirm"):
+    last = get_memory("last_whatsapp_request") or {}
+    src = pending if (pending or {}).get("message") else last
+    if not (src or {}).get("message"):
         return False, "There is no WhatsApp message waiting to be sent, sir."
     success, result = confirm_send_whatsapp_message()
     if success:
         save_memory("pending_whatsapp", None)
+        save_memory("last_whatsapp_request", None)
     return success, result
 
 
 def _cancel_whatsapp_tool(params: dict = None):
-    pending = get_memory("pending_whatsapp") or {}
-    if pending.get("awaiting_confirm"):
-        success, result = cancel_whatsapp_draft()
-        save_memory("pending_whatsapp", None)
-        return success, result
-    save_memory("pending_whatsapp", None)
-    return True, "No pending WhatsApp draft to cancel, sir."
+    success, result = cancel_whatsapp_draft()
+    return success, result
 
 
 TOOL_MAP = {
@@ -116,6 +140,7 @@ TOOL_MAP = {
     "web_search": web_search_puppeteer,
     "music_control": lambda params: music_control(params),
     "volume_control": lambda params: volume_control(params),
+    "calculate": lambda params: _calculate_tool(params),
     # Keep text-only summarize tools under smart_search / read_headlines
     "search_and_summarize": lambda params: search_and_summarize_in_notepad(params.get("query", "latest news")),
     "read_headlines": lambda params: read_news_headlines(params.get("query", "")),

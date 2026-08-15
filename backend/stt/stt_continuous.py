@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 DEFAULT_CONFIG = {
     # Model: "tiny" ~fastest | "base" ~best CPU balance | "small" ~higher accuracy
-    "model_size":        "base",
+    "model_size":        "tiny.en",
     "device":            "cpu",
     "compute_type":      "int8",        # quantized → fast on CPU
     "language":          None,          # None = auto-detect, or "en", "hi", etc.

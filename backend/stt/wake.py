@@ -14,7 +14,9 @@ import queue
 import time as time_module
 
 # Configuration
-MODEL_SIZE = "base.en"
+# Wake-word detection only needs a small, fast model. The command itself is
+# transcribed by the main STT pipeline after the wake word is detected.
+MODEL_SIZE = "tiny.en"
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 2  # Seconds of audio per analysis window
 COMPUTE_TYPE = "int8"
@@ -77,7 +79,7 @@ def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
                 try:
                     segments, _ = model.transcribe(
                         audio_data,
-                        beam_size=3,
+                        beam_size=1,
                         language="en",
                         initial_prompt="jarvis, hey jarvis, wake up jarvis",
                     )

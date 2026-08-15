@@ -552,11 +552,25 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             final_response = random.choice(JOKES)
 
         elif intent == "time":
-            now_dt = datetime.now()
+            from zoneinfo import ZoneInfo
+            timezone_name = (params or {}).get("timezone")
+            try:
+                now_dt = datetime.now(ZoneInfo(timezone_name)) if timezone_name else datetime.now().astimezone()
+            except Exception:
+                now_dt = datetime.now().astimezone()
+                timezone_name = None
+            location_suffix = (
+                f" in {timezone_name.split('/')[-1].replace('_', ' ')}"
+                if timezone_name else ""
+            )
             final_response = (
                 f"It is {now_dt.strftime('%I:%M %p')} on "
-                f"{now_dt.strftime('%A, %B %d, %Y')}, sir."
+                f"{now_dt.strftime('%A, %B %d, %Y')}{location_suffix}, sir."
             )
+
+        elif intent == "calculate":
+            success, result = await execute_tool(action_json)
+            final_response = result if isinstance(result, str) else "I could not complete that calculation, sir."
 
         elif intent == "qa":
             final_response = await _groq_generate(
@@ -789,8 +803,14 @@ async def process_command_with_timeout(command_text: str, request_id: str = None
             "browser", "demo", "puppeteer",
         )
     )
+    whatsappish = any(
+        k in low
+        for k in ("whatsapp", "watsapp", "whats app", "message to", "send satish", "send sathish")
+    )
     if browserish:
         timeout_s = 300.0
+    elif whatsappish:
+        timeout_s = 180.0
     elif voice:
         timeout_s = 180.0
     else:
