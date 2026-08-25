@@ -314,13 +314,21 @@ function Start-JarvisServices {
   Write-Step "Project root: $Root" "INFO"
   Write-Step "Starting all services..." "WAIT"
 
-  # ALWAYS start backend with the launcher
-  $backendPid = Start-BackendFresh
+  # UI server first, then the AI backend.
   $frontendPid = $null
-
+  $needFrontend = $true
   if (Test-PortOpen 3000) {
-    Write-Step "Frontend already online (port 3000)" "OK"
-  } else {
+    if (Wait-Http "http://127.0.0.1:3000" 8) {
+      Write-Step "Frontend already online (port 3000)" "OK"
+      $needFrontend = $false
+    } else {
+      Write-Step "Port 3000 is occupied but the UI is not responding - restarting" "WAIT"
+      Free-Port 3000
+      Start-Sleep -Milliseconds 500
+    }
+  }
+
+  if ($needFrontend) {
     Write-Step "Starting UI (Next.js :3000)..." "WAIT"
     $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
     if (-not $npmCmd) { $npmCmd = "npm.cmd" }
@@ -342,6 +350,7 @@ function Start-JarvisServices {
     Write-Step "Frontend online (PID $frontendPid)" "OK"
   }
 
+  $backendPid = Start-BackendFresh
   Save-Pids $backendPid $frontendPid
 
   Write-Host ""

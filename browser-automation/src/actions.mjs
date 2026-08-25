@@ -1,7 +1,7 @@
 /**
  * Low-level browser actions used by the control server and scenarios.
  */
-import { getPage, ensureBrowser, newTab, status as browserStatus } from "./browser.mjs";
+import { getPage, ensureBrowser, newTab, status as browserStatus, setWindowBounds } from "./browser.mjs";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -209,6 +209,9 @@ export async function runAction(action, params = {}) {
       return screenshot(params);
     case "info":
       return contentInfo();
+    case "set_window_bounds":
+    case "window_bounds":
+      return setWindowBounds(params.bounds || params);
     default:
       throw new Error(`Unknown action: ${action}`);
   }

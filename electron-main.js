@@ -1,8 +1,10 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, screen } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+
+const LAYOUT_PORT = Number(process.env.JARVIS_LAYOUT_PORT || 3930);
 
 let mainWindow;
 let pythonProcess = null;
@@ -231,6 +233,109 @@ function startBackend() {
   });
 }
 
+function sendJson(res, status, body) {
+  const data = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(data),
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(data);
+}
+
+function workAreaForJarvis() {
+  const display = mainWindow
+    ? screen.getDisplayMatching(mainWindow.getBounds())
+    : screen.getPrimaryDisplay();
+  return display.workArea;
+}
+
+function splitGeometry(area) {
+  const gap = 10;
+  const leftW = Math.max(520, Math.floor(area.width * 0.46));
+  const rightW = Math.max(480, area.width - leftW - gap);
+  return {
+    workArea: area,
+    jarvis: { x: area.x, y: area.y, width: leftW, height: area.height },
+    browser: {
+      left: area.x + leftW + gap,
+      top: area.y,
+      width: rightW,
+      height: area.height,
+    },
+  };
+}
+
+function applyJarvisLayout(mode) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, error: 'Jarvis window is not open' };
+  }
+  const area = workAreaForJarvis();
+  const geo = splitGeometry(area);
+  if (mode === 'split-left' || mode === 'split') {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.setBounds(geo.jarvis);
+    mainWindow.show();
+    return { ok: true, mode: 'split-left', ...geo };
+  }
+  if (mode === 'restore') {
+    const width = Math.min(1300, area.width - 80);
+    const height = Math.min(850, area.height - 60);
+    mainWindow.setBounds({
+      x: area.x + 40,
+      y: area.y + 30,
+      width,
+      height,
+    });
+    return { ok: true, mode: 'restore', workArea: area };
+  }
+  return { ok: false, error: `Unknown layout mode: ${mode}` };
+}
+
+function startLayoutServer() {
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+      return res.end();
+    }
+
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    if (url.pathname === '/health') {
+      return sendJson(res, 200, { ok: true, service: 'jarvis-layout' });
+    }
+
+    if (url.pathname === '/layout') {
+      let mode = url.searchParams.get('mode') || 'split-left';
+      if (req.method === 'POST') {
+        try {
+          const chunks = [];
+          for await (const c of req) chunks.push(c);
+          if (chunks.length) {
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+            mode = body.mode || mode;
+          }
+        } catch {
+          /* keep query mode */
+        }
+      }
+      return sendJson(res, 200, applyJarvisLayout(mode));
+    }
+
+    sendJson(res, 404, { ok: false, error: 'Not found' });
+  });
+
+  server.listen(LAYOUT_PORT, '127.0.0.1', () => {
+    logToFile(`Layout server listening on 127.0.0.1:${LAYOUT_PORT}`);
+  });
+  server.on('error', (err) => {
+    logToFile(`Layout server error: ${err.message}`, true);
+  });
+}
+
 async function createWindow() {
   try {
     await startBackend();
@@ -316,7 +421,10 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    startLayoutServer();
+    return createWindow();
+  });
 
   app.on('before-quit', (event) => {
     if (!app.isQuitting) {

@@ -505,6 +505,42 @@ export async function closeBrowser() {
   page = null;
 }
 
+export async function setWindowBounds(bounds = {}) {
+  const ctx = await ensureBrowser({ headless: process.env.PUPPETEER_HEADLESS === "1" });
+  const target = page && !page.isClosed() ? page : ctx.page;
+  if (!target) return { ok: false, error: "No browser page" };
+
+  const left = Math.round(Number(bounds.left ?? bounds.x ?? 40));
+  const top = Math.round(Number(bounds.top ?? bounds.y ?? 40));
+  const width = Math.max(480, Math.round(Number(bounds.width || 900)));
+  const height = Math.max(420, Math.round(Number(bounds.height || 800)));
+
+  try {
+    await target.bringToFront();
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const session = await target.createCDPSession();
+    const { windowId } = await session.send("Browser.getWindowForTarget");
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: {
+        windowState: "normal",
+        left,
+        top,
+        width,
+        height,
+      },
+    });
+    await target.setViewport({ width, height, deviceScaleFactor: 1 }).catch(() => {});
+    return { ok: true, left, top, width, height };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
+
 export function status() {
   return {
     connected: !!(browser && browser.connected),

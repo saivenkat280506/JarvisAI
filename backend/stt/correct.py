@@ -38,6 +38,18 @@ _PHRASE_FIXES: list[tuple[str, str]] = [
     (r"\bstop\s+listening\b", "stop listening"),
     (r"\bhey\s+jervis\b", "hey jarvis"),
     (r"\bjervis\b", "jarvis"),
+    (r"\bharvis\b", "jarvis"),
+    (r"\bhervis\b", "jarvis"),
+    (r"\bjarvus\b", "jarvis"),
+    (r"\bjarviz\b", "jarvis"),
+    (r"\bjarviss\b", "jarvis"),
+    (r"\bjarvies\b", "jarvis"),
+    (r"\bjadwish\b", "jarvis"),
+    (r"\bjarvish\b", "jarvis"),
+    (r"\bjarwish\b", "jarvis"),
+    (r"\bhi[,]?\s+i(?:'m| am)\s+jarvis\b", "hi jarvis"),
+    (r"\bhello[,]?\s+i(?:'m| am)\s+jarvis\b", "hello jarvis"),
+    (r"\bhey[,]?\s+i(?:'m| am)\s+jarvis\b", "hey jarvis"),
     # Phonetic mishearings for Q&A
     (r"\bwhat is nice in a mind\b", "what is niacinamide"),
     (r"\bwhat is nice inamide\b", "what is niacinamide"),
@@ -94,7 +106,7 @@ def correct_transcript(text: str) -> str:
     for pattern, replacement in _PHRASE_FIXES:
         cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
 
-    cleaned = _collapse_ws(cleaned)
+    cleaned = _collapse_ws(cleaned).rstrip(".!?,")
     words = cleaned.split()
     if 1 <= len(words) <= 6:
         match = get_close_matches(cleaned.lower(), _KNOWN_SHORT_COMMANDS, n=1, cutoff=0.82)

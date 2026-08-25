@@ -14,25 +14,99 @@ _WAKE_PREFIXES = (
     "hey jarvis", "hi jarvis", "hello jarvis",
     "wake up jarvis", "wake jarvis", "jarvis",
 )
+# Common STT spellings of "Jarvis"
+_WAKE_NAME_RE = re.compile(
+    r"\b(?:jarvis|jadwish|jarvish|jarwish|jarves|jarvice|jarvys|jarvies|"
+    r"harvis|hervis|jarvus|jarviz|jervis)\b",
+    re.IGNORECASE,
+)
 _GREETING_RE = re.compile(
     r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))"
-    r"(?:\s+jarvis)?$",
+    r"(?:[,.]?\s+(?:i(?:'m| am)\s+)?jarvis)?$",
     re.IGNORECASE,
 )
 
 _TIMEZONE_ALIASES = {
     "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo",
-    "london": "Europe/London", "uk": "Europe/London",
-    "new york": "America/New_York", "newyork": "America/New_York",
+    "london": "Europe/London", "uk": "Europe/London", "britain": "Europe/London",
+    "new york": "America/New_York", "newyork": "America/New_York", "nyc": "America/New_York",
     "los angeles": "America/Los_Angeles", "california": "America/Los_Angeles",
     "dubai": "Asia/Dubai", "singapore": "Asia/Singapore",
     "mumbai": "Asia/Kolkata", "delhi": "Asia/Kolkata", "india": "Asia/Kolkata",
+    "sydney": "Australia/Sydney", "paris": "Europe/Paris",
+    "chicago": "America/Chicago", "berlin": "Europe/Berlin",
     "utc": "UTC", "gmt": "Etc/GMT",
 }
 
 
+def _city_to_timezone(city: str) -> str | None:
+    key = re.sub(r"\s+", " ", (city or "").strip().lower())
+    key = re.sub(r"^(?:the\s+)?(?:city\s+of\s+)?", "", key)
+    return _TIMEZONE_ALIASES.get(key)
+
+
+def parse_time_query(text: str):
+    """
+    Return time params if this is a clock question, else None.
+    Handles 'time in Tokyo', 'Tokyo time', 'what time is it in London'.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    low = re.sub(r"\s+", " ", raw.lower()).rstrip(".?!, ")
+
+    if not re.search(r"\btime\b", low):
+        return None
+    # Don't steal "time travel", "full time", "give me a minute"
+    if re.search(r"\b(?:time travel|full[- ]time|part[- ]time|give me a minute)\b", low):
+        return None
+
+    city = None
+    m = re.search(
+        r"\b(?:time|clock)\s+(?:in|at|for)\s+([a-z][a-z\s]{1,30})$",
+        low,
+    )
+    if m:
+        city = m.group(1).strip()
+    if not city:
+        m = re.search(
+            r"\b(?:in|at|for)\s+([a-z][a-z\s]{1,30})$",
+            low,
+        )
+        if m and re.search(
+            r"\b(?:what(?:'s| is)\s+(?:the\s+)?time|what\s+time\s+is\s+it|current\s+time|tell\s+me\s+the\s+time)\b",
+            low,
+        ):
+            city = m.group(1).strip()
+    if not city:
+        m = re.match(r"^([a-z][a-z\s]{1,30})\s+time$", low)
+        if m:
+            city = m.group(1).strip()
+
+    looks_like_time = bool(
+        re.search(
+            r"\b(?:what(?:'s|\s+is)\s+(?:the\s+)?time|what\s+time\s+is\s+it|"
+            r"current\s+time|tell\s+me\s+the\s+time)\b",
+            low,
+        )
+        or re.match(r"^(?:the\s+)?time(?:\s+(?:in|at|for)\s+\w+)?$", low)
+        or re.match(r"^\w+(?:\s+\w+)?\s+time$", low)
+    )
+    if not looks_like_time:
+        return None
+
+    if city:
+        zone = _city_to_timezone(city)
+        if zone:
+            return {"timezone": zone, "city": city}
+        return {"timezone": None, "city": city}
+    return {}
+
+
 def _strip_wake_prefix(text: str) -> str:
     cleaned = text.lower().strip().rstrip(".?!, ")
+    cleaned = _WAKE_NAME_RE.sub("jarvis", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
     # Common speech/transcription spelling of WhatsApp.
     cleaned = re.sub(
         r"\bwhat(?:s|ts|tz)?\s*app\b|\bwatsapp\b|\bwatsap\b|\bwhatsap\b",
@@ -282,9 +356,11 @@ def route_command(text: str):
     if done_task:
         return "complete_task", {"query": done_task.group(1).strip()}
 
+    # Memory only — never steal general "what is mitochondria" / "who is X".
     recall_cmd = re.match(
-        r"^(?:what(?:'s| is| do you remember)|who is|do you remember|"
-        r"what did i (?:tell|say)|look up|remind me what)\s+(.+)$",
+        r"^(?:what do you remember(?: about)?|do you remember|"
+        r"what did i (?:tell|say)(?: you)?(?: about)?|"
+        r"remind me what|what(?:'s| is) my)\s+(.+)$",
         text_clean,
         re.I,
     )
@@ -653,19 +729,10 @@ def route_command(text: str):
             "right": calc_match.group(3),
         }
 
-    # 4b. Intent: time — before news (LLM often confuses "right now" with headlines)
-    time_match = re.search(
-        r"\b(?:what(?:'s|\s+is)\s+(?:the\s+)?time|what\s+time\s+is\s+it|current\s+time|tell\s+me\s+the\s+time)\b",
-        text,
-        re.IGNORECASE,
-    )
-    if time_match:
-        timezone = None
-        location = re.search(r"\b(?:in|at|for)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b", text, re.I)
-        if location:
-            city = location.group(1).lower().strip()
-            timezone = _TIMEZONE_ALIASES.get(city)
-        return "time", {"timezone": timezone} if timezone else {}
+    # 4b. Intent: time — before news/search ("time in Tokyo" is not a web search)
+    time_params = parse_time_query(text_clean) or parse_time_query(text)
+    if time_params is not None:
+        return "time", time_params
 
     # 5. Intent: news / headlines (must be checked BEFORE search_browser)
     if any(k in text for k in ["news", "headlines", "latest news", "what's happening", "top stories", "news summary", "headlines summary", "read summary"]):
@@ -676,6 +743,23 @@ def route_command(text: str):
     search_match = re.search(r"(?:search\s+(?:for\s+)?|google\s+)(.+)", text)
     if search_match:
         return "search_browser", {"query": search_match.group(1).strip()}
+
+    # Spoken "on the internet / look up" — answer in voice, do not open a browser.
+    on_web = re.match(
+        r"^(?:about\s+)?(.+?)\s+on\s+(?:the\s+)?(?:internet|web|google)$",
+        text_clean,
+        re.I,
+    )
+    if on_web:
+        return "smart_search", {"query": on_web.group(1).strip()}
+
+    look_up = re.match(
+        r"^(?:look\s+up|look\s+it\s+up|find\s+online)\s+(.+)$",
+        text_clean,
+        re.I,
+    )
+    if look_up:
+        return "smart_search", {"query": look_up.group(1).strip()}
 
     # 7. Intent: cancel_task
     # Matches: "stop", "cancel", "stop music", "cancel playing"

@@ -23,6 +23,7 @@ import wave
 
 from config import settings
 from stt.correct import correct_transcript
+from stt.devices import pick_input_device
 from stt.filter import is_phantom_transcript, is_whisper_hallucination
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -39,12 +40,13 @@ MAX_PARTIAL_TRANSCRIPTIONS = 1  # One preview; final transcription is authoritat
 MIN_SPEECH_FRAMES = 8         # Ignore clips shorter than ~240ms
 
 STT_PROMPT = (
-    "JARVIS voice assistant. Transcribe only what the user actually says. "
+    "The assistant is named Jarvis. Spell it Jarvis, never Harvis, Jervis, or Service. "
+    "Transcribe only what the user actually says. "
     "Never output subtitle credits, Amara.org, website URLs, video outros, "
-    "or phrases the user did not speak. "
+    "or hold phrases like give me a minute. "
     "Commands: play music, stop music, read headlines, set volume, reduce volume, "
-    "search for laptops, what is niacinamide, what is the time, tell me a joke, "
-    "open Chrome, WhatsApp, Spotify, YouTube Music."
+    "search for, what is, what is the time, tell me a joke, "
+    "open Chrome, WhatsApp, Spotify, YouTube Music, hi jarvis."
 )
 
 # ── Groq Client (lazy singleton) ────────────────────────────────────────────
@@ -131,6 +133,23 @@ def ensure_pcm_audio(audio_bytes: bytes) -> bytes:
     if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
         return wav_to_pcm(audio_bytes)
     return audio_bytes
+
+
+def _pcm_stats(pcm_bytes: bytes) -> tuple[float, float]:
+    if not pcm_bytes:
+        return 0.0, 0.0
+    audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    if audio.size == 0:
+        return 0.0, 0.0
+    peak = float(np.max(np.abs(audio)))
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    return peak, rms
+
+
+def is_audible_speech(pcm_bytes: bytes) -> bool:
+    """Reject near-silent clips that make Whisper invent 'give me a minute'."""
+    peak, rms = _pcm_stats(pcm_bytes)
+    return peak >= 1200 and rms >= 220
 
 
 def normalize_pcm(pcm_bytes: bytes) -> bytes:
@@ -220,6 +239,9 @@ def transcribe_audio(pcm_bytes: bytes) -> str:
     if not pcm_bytes:
         return ""
     pcm_bytes = ensure_pcm_audio(pcm_bytes)
+    if not is_audible_speech(pcm_bytes):
+        print("[STT] Clip too quiet — ignoring (likely noise or speaker echo).")
+        return ""
     text = transcribe_groq(pcm_bytes)
     if not text or is_whisper_hallucination(text):
         local = transcribe_local(pcm_bytes)
@@ -309,7 +331,9 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
 
     stream = None
     try:
+        mic = pick_input_device()
         stream = sd.InputStream(
+            device=mic,
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="int16",

@@ -19,6 +19,7 @@ from brain.memory_store import (
     complete_task,
     unique_whatsapp_targets,
     parse_remember_text,
+    try_fast_answer,
 )
 
 
@@ -37,6 +38,12 @@ check("remember", ok and "hunter2" in msg)
 
 ok, msg = recall("wifi password")
 check("recall exact", ok and "hunter2" in msg)
+
+hit = try_fast_answer("what do you remember about wifi password")
+check("fast answer memory hit", hit and "hunter2" in hit)
+
+miss = try_fast_answer("what is mitochondria")
+check("fast answer ignores general knowledge", miss is None)
 
 ok, msg = add_task("buy milk")
 check("add task", ok)

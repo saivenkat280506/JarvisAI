@@ -36,7 +36,7 @@ BROWSER (Puppeteer — preferred for web/music UI):
 - play_youtube_music {"song":"..."} — ONLY if user explicitly asks to play a song/music (e.g., "play X")
 - play_youtube_search {"song":"..."} — same as music (legacy)
 - browser_scroll_test {} — "scroll test" / "scroll speed test"
-- search_browser {"query":"..."} — "search for X" / "google X" (opens browser + scroll)
+- search_browser {"query":"..."} — ONLY explicit "search for X" / "google X" (opens browser beside Jarvis + spoken summary)
 - browser_navigate {"url":"https://..."}
 - browser_click {"selector":"..."} or {"text":"..."}
 - browser_type {"selector":"...","text":"..."}
@@ -50,7 +50,12 @@ OTHER:
 - open_app {"app":"..."}
 - send_whatsapp {"name":"...","message":"..."} — use the spoken contact name only. NEVER invent a phone number. NEVER output placeholders such as "+91...". Omit number unless the user said a full real number. NEVER use name "all", "everyone", or a group. Sends immediately; do not draft.
 - send_whatsapp_all {"message":"..."} — ONLY if the user said "all contacts" / "every contact". Never groups, never everyone on WhatsApp. Message required.
-- remember {"text":"..."} / recall {"query":"..."} / add_task {"title":"..."} / list_tasks {} / complete_task {"query":"..."} — local memory, no web search.
+- remember {"text":"..."} — only if user said remember/note/save this
+- recall {"query":"..."} — only "what do you remember" / "do you remember" / "what did I tell you" / "what is my X". NEVER for general "what is mitochondria" or "who is Donald Trump"
+- add_task {"title":"..."} / list_tasks {} / complete_task {"query":"..."}
+- time {"timezone":"Asia/Tokyo"} — "time in Tokyo", "Tokyo time", "what time is it"
+- qa {"query":"..."} — general knowledge: "what is X", "who is X", "explain X", "tell me about X"
+- smart_search {"query":"..."} — "about X on the internet", "look up X" (same split-screen search briefing)
 - confirm_whatsapp_send {} — user said yes/ok/send after a draft
 - cancel_whatsapp_send {} — user said no/cancel after a draft
 - play_local_music {} — "play music" / "play garage music" (local garage track)
@@ -105,6 +110,10 @@ def decide_action(user_input: str, context: str = ""):
             ).strip(" .,!?")
             if song:
                 return {"intent": "play_youtube_music", "parameters": {"song": song}}
+        if re.search(r"\b(?:what is|what are|who is|who are|tell me about|explain)\b", low):
+            return {"intent": "qa", "parameters": {"query": user_input}}
+        if "on the internet" in low or "on the web" in low or low.startswith("look up "):
+            return {"intent": "smart_search", "parameters": {"query": user_input}}
         if "search" in low or "google" in low:
             return {"intent": "search_browser", "parameters": {"query": user_input}}
         return {"intent": "chat", "parameters": {"response": ""}}

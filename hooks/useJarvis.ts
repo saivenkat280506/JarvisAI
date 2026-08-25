@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { ChatMessage } from "@/components/ChatArea";
+import { SearchBriefingData } from "@/components/SearchBriefing";
 import { AgentState } from "@/components/ui/orb";
 import { useBackendStatus } from "@/hooks/useBackendStatus";
 
@@ -189,6 +190,48 @@ export function useJarvis() {
           pushLog(makeLog("Agent", `Step ${data.step}: ${data.action}`, status));
         }
 
+        if (data.type === "search_briefing") {
+          const briefing: SearchBriefingData = {
+            query: data.query || "",
+            url: data.url || "",
+            sources: Array.isArray(data.sources) ? data.sources : [],
+            status: data.status === "searching" ? "searching" : "ready",
+          };
+          setMessages((prev) => {
+            const lastAssistant = [...prev].reverse().find((m) => m.role === "assistant");
+            if (lastAssistant) {
+              const sameText = data.summary && lastAssistant.content === data.summary;
+              const searching = lastAssistant.briefing?.status === "searching" || lastAssistant.isStreaming;
+              if (sameText || searching || lastAssistant.briefing?.query === briefing.query) {
+                return prev.map((m) =>
+                  m.id === lastAssistant.id
+                    ? {
+                        ...m,
+                        content: data.summary || m.content,
+                        briefing,
+                        isStreaming: data.status === "searching" ? m.isStreaming : false,
+                      }
+                    : m
+                );
+              }
+            }
+            const newMsg: ChatMessage = {
+              id: "brief-" + Date.now(),
+              role: "assistant",
+              type: "voice",
+              content: data.summary || `Searching the web for ${briefing.query}…`,
+              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+              briefing,
+            };
+            return [...prev, newMsg];
+          });
+          if (data.status === "searching") {
+            pushLog(makeLog("Browser", `Searching: ${data.query}`, "pending"));
+          } else {
+            pushLog(makeLog("Browser", `Search briefing ready (${(data.sources || []).length} sources)`, "success"));
+          }
+        }
+
         if (data.action === "focus_window") {
           window.focus();
           pushLog(makeLog("UI", "Window focus restored", "info"));
@@ -286,6 +329,7 @@ export function useJarvis() {
                       minute: "2-digit",
                       hour12: false,
                     }),
+                    briefing: prev.find((m) => m.id === assistantMsgId)?.briefing,
                   };
                   if (!exists) return [...prev, assistantMsg];
                   return prev.map((m) =>

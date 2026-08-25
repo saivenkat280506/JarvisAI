@@ -48,8 +48,6 @@ BROWSER_INTENTS = frozenset({
     "play_youtube_search",
     "play_spotify",
     "spotify_login",
-    "search_browser",
-    "web_search",
     "browser_scroll_test",
     "browser_navigate",
     "browser_click",
@@ -57,6 +55,12 @@ BROWSER_INTENTS = frozenset({
     "browser_scroll",
     "browser_action",
     "linkedin_browser_demo",
+})
+
+SEARCH_BRIEF_INTENTS = frozenset({
+    "search_browser",
+    "web_search",
+    "smart_search",
 })
 
 JARVIS_SYSTEM_PROMPT = """
@@ -555,15 +559,18 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
         elif intent == "time":
             from zoneinfo import ZoneInfo
             timezone_name = (params or {}).get("timezone")
+            city = (params or {}).get("city")
             try:
                 now_dt = datetime.now(ZoneInfo(timezone_name)) if timezone_name else datetime.now().astimezone()
             except Exception:
                 now_dt = datetime.now().astimezone()
                 timezone_name = None
-            location_suffix = (
-                f" in {timezone_name.split('/')[-1].replace('_', ' ')}"
-                if timezone_name else ""
-            )
+            if city:
+                location_suffix = f" in {str(city).title()}"
+            elif timezone_name:
+                location_suffix = f" in {timezone_name.split('/')[-1].replace('_', ' ')}"
+            else:
+                location_suffix = ""
             final_response = (
                 f"It is {now_dt.strftime('%I:%M %p')} on "
                 f"{now_dt.strftime('%A, %B %d, %Y')}{location_suffix}, sir."
@@ -583,10 +590,117 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                     f"Question (voice transcript — may contain speech-to-text errors, "
                     f"interpret phonetically): {command_text}\n"
                     "Examples: 'nice in a mind' likely means 'niacinamide'. "
+                    "'TagGPT' or 'chai GPT' likely means ChatGPT. "
                     "Answer the user's intended question in 1 to 3 sentences. "
+                    "If this is general knowledge, answer it. Do not say you have "
+                    "nothing saved — you are not looking in local memory. "
                     "No greeting. Start with the answer immediately.",
                     system=QA_SYSTEM_PROMPT,
                 )
+
+        elif intent in SEARCH_BRIEF_INTENTS:
+            from brain.router import parse_time_query
+            from executor.search_briefing import (
+                format_found_about,
+                is_ad_search_result as _is_ad_search_result,
+                looks_like_ad_text as _looks_like_ad_text,
+                run_search_briefing,
+            )
+
+            query = ((params or {}).get("query") or command_text).strip()
+            time_params = parse_time_query(query) or parse_time_query(command_text)
+            if time_params is not None:
+                from zoneinfo import ZoneInfo
+                timezone_name = time_params.get("timezone")
+                city = time_params.get("city")
+                try:
+                    now_dt = datetime.now(ZoneInfo(timezone_name)) if timezone_name else datetime.now().astimezone()
+                except Exception:
+                    now_dt = datetime.now().astimezone()
+                    timezone_name = None
+                if city:
+                    location_suffix = f" in {str(city).title()}"
+                elif timezone_name:
+                    location_suffix = f" in {timezone_name.split('/')[-1].replace('_', ' ')}"
+                else:
+                    location_suffix = ""
+                final_response = (
+                    f"It is {now_dt.strftime('%I:%M %p')} on "
+                    f"{now_dt.strftime('%A, %B %d, %Y')}{location_suffix}, sir."
+                )
+                intent = "time"
+            else:
+                ack = f"Searching the web for {query}, sir."
+                await _push_chat(ack, voice=voice)
+                if not voice:
+                    yield f"data: {json.dumps({'text': ack, 'model': 'router', 'done': False})}\n\n"
+                if flags.speak_epoch == command_epoch:
+                    asyncio.create_task(
+                        speak(ack, is_smart=False, response_id=f"{response_id}_ack")
+                    )
+
+                await manager.broadcast_json({
+                    "type": "search_briefing",
+                    "status": "searching",
+                    "query": query,
+                    "sources": [],
+                })
+
+                briefing = await asyncio.to_thread(run_search_briefing, query)
+                sources = [
+                    s for s in (briefing.get("results") or [])
+                    if not _is_ad_search_result(s)
+                ]
+                featured = (briefing.get("featured") or "").strip()
+                if _looks_like_ad_text(featured):
+                    featured = ""
+                bullets = []
+                if featured:
+                    bullets.append(f"Featured: {featured}")
+                for i, item in enumerate(sources[:5], 1):
+                    snip = item.get("snippet") or ""
+                    bullets.append(f"{i}. {item.get('title', '')} — {snip}")
+
+                if briefing.get("ok") and (featured or sources):
+                    evidence = "\n".join(bullets)
+                    final_response = await _groq_generate(
+                        f"The user searched the web for: {query}\n"
+                        f"Live results (also visible in the browser beside this app):\n{evidence}\n\n"
+                        "Write TWO short spoken sentences only. No greeting. No markdown. "
+                        "Do not say here's what I found. Ignore hotel, booking, and shopping ads. "
+                        "Do not mention Booking.com. Just the useful facts.",
+                        system=QA_SYSTEM_PROMPT,
+                    )
+                else:
+                    from executor.automation import smart_search as text_search
+                    ok, fallback = await asyncio.to_thread(text_search, query)
+                    if ok and fallback:
+                        final_response = fallback
+                    else:
+                        final_response = await _groq_generate(
+                            f"The user asked: {query}\n"
+                            "Answer in TWO short spoken sentences. No greeting.",
+                            system=QA_SYSTEM_PROMPT,
+                        )
+                final_response = format_found_about(query, final_response or "")
+
+                await manager.broadcast_json({
+                    "type": "search_briefing",
+                    "status": "ready",
+                    "query": query,
+                    "summary": final_response,
+                    "url": briefing.get("url") or "",
+                    "sources": [
+                        {
+                            "title": s.get("title") or "",
+                            "url": s.get("url") or "",
+                            "snippet": s.get("snippet") or "",
+                        }
+                        for s in sources
+                    ],
+                })
+                add_to_history(command_text)
+                print(f"[Core] Search briefing ok={briefing.get('ok')} sources={len(sources)}")
 
         elif intent == "intro":
             final_response = await _groq_generate(
@@ -659,9 +773,8 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                     )
 
         elif intent == "play_local_music":
-            # Garage track + full time-based J.A.R.V.I.S. dialogue (Windows vol 50/25)
             add_to_history(command_text)
-            final_response = welcome_home_line()
+            final_response = garage_music_line()
             print(f"[Core] play_local_music dialogue: {final_response!r}")
 
         elif intent == "daddys_home":
@@ -675,9 +788,6 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             if intent in ("play_youtube_music", "play_youtube_search"):
                 song = (params or {}).get("song") or (params or {}).get("query") or "that track"
                 ack = f"Playing {song} on YouTube Music, sir."
-            elif intent == "search_browser" or intent == "web_search":
-                q = (params or {}).get("query") or "that"
-                ack = f"Searching the web for {q}, sir."
             elif intent == "browser_scroll_test":
                 ack = "Running a scroll demo, sir."
             elif intent == "linkedin_browser_demo":
@@ -729,7 +839,8 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                 await set_state(SystemState.IDLE)
             else:
                 is_smart = intent in [
-                    "chat", "read_headlines", "smart_search", "news", "intro", "capabilities", "qa"
+                    "chat", "read_headlines", "smart_search", "news", "intro",
+                    "capabilities", "qa", "search_browser", "web_search",
                 ]
                 if intent in ("play_local_music", "daddys_home"):
                     vol = int((params or {}).get("volume") or 50)
@@ -737,8 +848,12 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
                     asyncio.create_task(
                         _play_garage_and_speak(final_response, response_id, volume=vol)
                     )
+                elif intent in SEARCH_BRIEF_INTENTS:
+                    asyncio.create_task(
+                        _speak_in_background(final_response, is_smart=True, response_id=response_id)
+                    )
                 elif intent in BROWSER_INTENTS and intent in (
-                    "play_youtube_music", "play_youtube_search", "search_browser", "web_search",
+                    "play_youtube_music", "play_youtube_search",
                     "browser_scroll_test", "linkedin_browser_demo",
                 ):
                     # Already spoke a short ack; speak final tool result once

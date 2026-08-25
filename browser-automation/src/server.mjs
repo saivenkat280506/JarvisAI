@@ -79,13 +79,17 @@ async function handleCommand(body) {
     case "web_search":
     case "search_and_scroll":
     case "google_search":
+    case "search_brief":
       return searchAndScroll({
         query: params.query || params.q || params.text,
-        times: params.times,
-        pixels: params.pixels,
-        delayMs: params.delayMs ?? params.delay_ms ?? 5000,
-        settleMs: params.settleMs ?? params.settle_ms ?? 900,
+        bounds: params.bounds || null,
       });
+
+    case "set_window_bounds":
+    case "window_bounds": {
+      const { setWindowBounds } = await import("./browser.mjs");
+      return setWindowBounds(params.bounds || params);
+    }
 
     case "close":
       await closeBrowser();
