@@ -115,7 +115,7 @@ async def _wait_until_ready_to_listen():
         if ready:
             # Brief pause after TTS so the mic does not pick up speaker echo
             if tts_was_active:
-                await asyncio.sleep(0.6)
+                await asyncio.sleep(1.2)
             return
         await asyncio.sleep(0.5)
 

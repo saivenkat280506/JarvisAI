@@ -363,14 +363,23 @@ def try_fast_answer(text: str) -> str | None:
     low = (text or "").strip().lower()
     if not low:
         return None
-    if re.search(
-        r"\b(?:what(?:'s| is| do you remember)|who is|remind me what|"
-        r"do you remember|what did i (?:tell|say)|look up)\b",
+
+    explicit = re.match(
+        r"^(?:what do you remember(?: about)?|do you remember|"
+        r"what did i (?:tell|say)(?: you)?(?: about)?|"
+        r"remind me what|what(?:'s| is) my)\s+(.+)$",
         low,
-    ):
-        ok, msg = recall(low)
+    )
+    if explicit:
+        ok, msg = recall(explicit.group(1).strip())
+        return msg
+
+    who = re.match(r"^(?:who is|who's)\s+(.+)$", low)
+    if who:
+        ok, msg = recall(who.group(1).strip())
         if ok:
             return msg
+
     if re.search(r"\b(?:list|show|what are)\s+(?:my\s+)?(?:saved\s+)?contacts\b", low):
         return list_remembered_contacts()[1]
     if re.search(r"\b(?:list|show|what are)\s+(?:my\s+)?tasks\b", low):

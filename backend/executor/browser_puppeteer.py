@@ -82,21 +82,17 @@ def scroll_test_puppeteer(params: dict | None = None) -> tuple[bool, str]:
 
 
 def web_search_puppeteer(params: dict | None = None) -> tuple[bool, str]:
-    """Google search in Puppeteer browser, then slow visible scroll (~5s gaps)."""
+    """Open search results beside Jarvis. No scroll demo."""
     params = params or {}
     query = (params.get("query") or params.get("q") or params.get("text") or "").strip()
     if not query:
         return False, "What should I search for?"
-    result = command(
-        "web_search",
-        timeout=180.0,
-        query=query,
-        times=int(params.get("times") or 4),
-        pixels=int(params.get("pixels") or 380),
-        delayMs=int(params.get("delayMs") or params.get("delay_ms") or 5000),
-        settleMs=int(params.get("settleMs") or 900),
-    )
-    return tool_result(result, default_ok_message=f"Searched for {query}.")
+    from executor.search_briefing import run_search_briefing
+    briefing = run_search_briefing(query)
+    if briefing.get("ok"):
+        n = len(briefing.get("results") or [])
+        return True, f"Opened search results for {query}." + (f" Found {n} sources." if n else "")
+    return False, briefing.get("error") or f"Could not open search for {query}."
 
 
 def browser_click(params: dict | None = None) -> tuple[bool, str]:

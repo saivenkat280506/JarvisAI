@@ -2,7 +2,7 @@
   "muted": false,
   "autoWake": true,
   "realTimeFeedback": true,
-  "volume": 100,
-  "confidence": 20,
+  "volume": 80,
+  "confidence": 85,
   "theme": "light"
 }

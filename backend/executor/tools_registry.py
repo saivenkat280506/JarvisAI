@@ -197,7 +197,7 @@ TOOL_MAP = {
     "browser_scroll": browser_scroll,
     "browser_navigate": browser_navigate,
     "linkedin_browser_demo": linkedin_browser_demo,
-    # Search opens real browser + slow scroll (not notepad)
+    # Search opens Chrome beside Jarvis and returns result snippets
     "search_browser": web_search_puppeteer,
     "web_search": web_search_puppeteer,
     "music_control": lambda params: music_control(params),

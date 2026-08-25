@@ -87,6 +87,39 @@ check("remember routes", intent == "remember")
 intent, params = route_command("what do you remember about wifi password")
 check("recall routes", intent == "recall")
 
+intent, params = route_command("What is mitochondria?")
+check("what is mitochondria is qa", intent == "qa")
+
+intent, params = route_command("What is TagGPT?")
+check("what is TagGPT is qa", intent == "qa")
+
+intent, params = route_command("What is chai jpd?")
+check("what is chai jpd is qa", intent == "qa")
+
+intent, params = route_command("about Donald Trump on the internet")
+check(
+    "about X on the internet is smart_search",
+    intent == "smart_search" and "trump" in (params or {}).get("query", "").lower(),
+)
+
+intent, params = route_command("look up mitochondria")
+check("look up is smart_search", intent == "smart_search")
+
+intent, params = route_command("search for donald trump")
+check("search for is search_browser", intent == "search_browser")
+
+intent, params = route_command("play music")
+check("play music is local", intent == "play_local_music")
+
+intent, params = route_command("Hi Jadwish")
+check("Hi Jadwish is greeting", intent == "greeting")
+
+intent, params = route_command("Hi, I'm Jarvis")
+check("hi i'm jarvis is greeting", intent == "greeting")
+
+intent, params = route_command("what is my wifi password")
+check("what is my ... is recall", intent == "recall")
+
 intent, params = route_command("list contacts")
 check("list contacts", intent == "recall" and (params or {}).get("query") == "contacts")
 

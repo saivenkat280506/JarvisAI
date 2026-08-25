@@ -13,6 +13,7 @@ import {
 import { SendHorizontal, Mic, FileUp, PauseIcon, PlayIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import SearchBriefing, { SearchBriefingData } from "@/components/SearchBriefing";
 
 export interface ChatMessage {
   id: string;
@@ -23,6 +24,7 @@ export interface ChatMessage {
   isStreaming?: boolean;
   audioSrc?: string;
   alignment?: any;
+  briefing?: SearchBriefingData;
 }
 
 export interface ChatAreaProps {
@@ -102,6 +104,7 @@ export default function ChatArea({
                         <TranscriptViewerScrubBar className="flex-1" />
                       </div>
                     </TranscriptViewerContainer>
+                    {msg.briefing && <SearchBriefing briefing={msg.briefing} />}
                     <span className="text-[9px] mt-1.5 opacity-40 font-jetbrains px-2">
                        {msg.time}
                     </span>
@@ -122,6 +125,9 @@ export default function ChatArea({
                       </Response>
                     ) : (
                       msg.content
+                    )}
+                    {msg.role === "assistant" && msg.briefing && (
+                      <SearchBriefing briefing={msg.briefing} />
                     )}
                     <span className={cn(
                       "text-[9px] mt-1.5 opacity-40 font-jetbrains",

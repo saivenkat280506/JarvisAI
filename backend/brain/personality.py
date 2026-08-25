@@ -242,11 +242,12 @@ def welcome_home_line() -> str:
 
 
 def garage_music_line() -> str:
-    """
-    Same class of spoken dialogue when user says play music / garage music.
-    Time-based J.A.R.V.I.S. briefing while the garage track plays.
-    """
-    return welcome_home_line()
+    """Short confirmation when the user asked to play music — not a welcome-home briefing."""
+    return random.choice([
+        "Playing your music, sir.",
+        "Garage track is on, sir.",
+        "Music coming up, sir.",
+    ])
 
 
 if __name__ == "__main__":

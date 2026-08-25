@@ -10,6 +10,13 @@ _PHANTOM_EXACT = {
     "you're welcome", "youre welcome",
     "subtitles by the amara.org community",
     "subtitles by the amara org community",
+    "give me a minute", "give me a second", "give me one minute",
+    "just a minute", "just a second", "just a moment",
+    "one minute", "one moment", "one second",
+    "hold on", "hold on a minute", "hold on a second",
+    "wait a minute", "wait a second", "wait a moment",
+    "that means", "that means give me a minute",
+    "that means, give me a minute",
 }
 
 # Whisper training-data hallucinations (YouTube credits, websites, etc.)
@@ -41,6 +48,10 @@ _PHANTOM_PATTERNS = (
     r"^for\s+watching\b",
     r"^subtitles?\s+by\b",
     r"\bamara\.?org\b",
+    r"^that means\b",
+    r"^give me a (?:minute|second|moment)\b",
+    r"^just a (?:minute|second|moment)\b",
+    r"^wait a (?:minute|second|moment)\b",
 )
 
 

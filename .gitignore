@@ -86,3 +86,8 @@ browser-automation/user-data/
 browser-automation/chrome-profile-data/
 browser-automation/puppeteer-server.log
 browser-automation/node_modules/
+Crashpad/
+CrashpadMetrics*
+*.pma
+backend/executor/whatsapp_contacts.json
+browser-automation/src/get_chrome_password.py

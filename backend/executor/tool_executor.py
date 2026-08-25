@@ -24,6 +24,7 @@ NO_SEARCH_FALLBACK_INTENTS = {
     "spotify_login", "browser_action", "browser_scroll_test",
     "browser_click", "browser_type", "browser_scroll", "browser_navigate",
     "linkedin_browser_demo", "web_search", "search_and_summarize",
+    "smart_search", "qa", "search_browser",
 }
 
 
@@ -61,14 +62,22 @@ async def execute_tool(action_json: dict, background: bool = False):
             if not success:
                 # Log the actual error internally
                 log_error(intent, Exception(result))
-                
+
+                query = params.get("query") or params.get("song") or params.get("q") or ""
+                if intent in ("search_browser", "web_search") and query:
+                    print("[Executor] Browser search failed. Falling back to spoken search.")
+                    from executor.automation import smart_search
+                    s_success, s_msg = await asyncio.to_thread(smart_search, query)
+                    if s_success and s_msg:
+                        return True, s_msg
+
                 if intent not in NO_SEARCH_FALLBACK_INTENTS:
-                    print("[Executor] Tool failed. Falling back to browser search.")
-                    from executor.automation import search_google
-                    query = params.get("query") or params.get("song") or "the request"
-                    s_success, s_msg = await asyncio.to_thread(search_google, query)
-                    if s_success:
-                        return True, "Automatic tool failed, but I've searched the web for you instead."
+                    print("[Executor] Tool failed. Falling back to spoken search.")
+                    from executor.automation import smart_search
+                    fallback_q = query or "the request"
+                    s_success, s_msg = await asyncio.to_thread(smart_search, fallback_q)
+                    if s_success and s_msg:
+                        return True, s_msg
                 
                 # Final fallback: add to retry queue in agent_loop
                 agent_loop.add_to_retry_queue(

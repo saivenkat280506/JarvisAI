@@ -972,9 +972,9 @@ def smart_search(query: str):
         abstract = data.get("AbstractText", "").strip()
         answer = data.get("Answer", "").strip()
         if abstract:
-            return True, f"Here's what I found: {abstract}"
+            return True, abstract
         if answer:
-            return True, f"Here's what I found: {answer}"
+            return True, answer
 
         snippets = [
             t.get("Text", "")

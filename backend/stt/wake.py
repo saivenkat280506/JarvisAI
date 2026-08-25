@@ -12,6 +12,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 import queue
 import time as time_module
+from stt.devices import pick_input_device
 
 # Configuration
 # Wake-word detection only needs a small, fast model. The command itself is
@@ -22,6 +23,10 @@ CHUNK_DURATION = 2  # Seconds of audio per analysis window
 COMPUTE_TYPE = "int8"
 
 WAKE_PHRASES = ["jarvis", "hey jarvis", "wake up jarvis", "wake jarvis"]
+_WAKE_ALIASES = (
+    "jarvis", "harvis", "hervis", "jervis", "jarvish", "jadwish",
+    "jarwish", "jarvus", "jarviz", "jarves",
+)
 
 _model: WhisperModel | None = None
 
@@ -52,6 +57,7 @@ def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
 
     try:
         with sd.InputStream(
+            device=pick_input_device(),
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="float32",
@@ -89,8 +95,7 @@ def wait_for_wake_word(stop_check=None, barge_in_callback=None) -> bool:
                     audio_buffer = []
                     continue
 
-                # Check for wake phrases
-                if text and any(phrase in text for phrase in WAKE_PHRASES):
+                if text and any(alias in text for alias in _WAKE_ALIASES):
                     print(f"[Wake] Wake phrase detected in: '{text}'")
                     return True
 
