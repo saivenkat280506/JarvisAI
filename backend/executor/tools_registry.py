@@ -4,11 +4,12 @@ tools_registry.py — Tool Mapping
 Maps intent strings to actual Python functions.
 """
 
+import os
+
 from executor.open_app import open_app
+from mcp_clients import shell as mcp_shell
 from executor.automation import (
     send_whatsapp_message,
-    prepare_whatsapp_message,
-    send_whatsapp_to_saved_contacts,
     confirm_send_whatsapp_message,
     cancel_whatsapp_draft,
     search_google,
@@ -83,7 +84,7 @@ def _usable_whatsapp_number(number: str) -> str:
 
 def _send_whatsapp_tool(params: dict):
     """
-    Open WhatsApp → wait for load → open the saved chat → clear → type → send.
+    Open WhatsApp → Sathish chat only → type a draft. Send is frozen.
     """
     name = (
         params.get("name")
@@ -94,12 +95,9 @@ def _send_whatsapp_tool(params: dict):
     number = _usable_whatsapp_number(params.get("number") or params.get("phone") or "")
     message = params.get("message") or params.get("text") or ""
     request = {"name": name, "number": number, "message": message}
-    save_memory("last_whatsapp_request", request)
-    save_memory("pending_whatsapp", None)
-    success, result = prepare_whatsapp_message(name, message=message, number=number)
+    success, result = send_whatsapp_message(name, message=message, number=number)
     if success:
         save_memory("last_contact", name or number)
-        save_memory("last_whatsapp_request", None)
     return success, result
 
 
@@ -113,12 +111,13 @@ def _send_whatsapp_all_tool(params: dict):
             "Say the message and 'all contacts' together, for example: "
             "send hello from Jarvis to all contacts."
         )
-    save_memory("last_whatsapp_request", {"all_contacts": True, "message": message})
-    save_memory("pending_whatsapp", None)
-    success, result = send_whatsapp_to_saved_contacts(message)
-    if success:
-        save_memory("last_whatsapp_request", None)
-    return success, result
+    request = {"all_contacts": True, "message": message}
+    save_memory("last_whatsapp_request", request)
+    save_memory("pending_whatsapp", {**request, "awaiting_confirm": True})
+    return True, (
+        "I have a WhatsApp message ready for all saved contacts. "
+        "Say ‘yes’ to confirm sending it, or ‘cancel’ to discard it."
+    )
 
 
 def _remember_tool(params: dict):
@@ -149,12 +148,126 @@ def _complete_task_tool(params: dict):
     return complete_task((params or {}).get("query") or (params or {}).get("title") or "")
 
 
+def _search_files_tool(params: dict):
+    query = ((params or {}).get("query") or "").strip()
+    if not query:
+        return False, "Tell me the file name to search for, sir."
+    result = mcp_shell.search_files(query, directory=(params or {}).get("directory"))
+    if not result.get("ok"):
+        return False, result.get("error", "Local file search failed.")
+    paths = result.get("results", [])
+    if not paths:
+        return True, f"I couldn't find a local file matching {query!r}."
+    return True, "Found local files:\n" + "\n".join(paths)
+
+
+_HOME_DIRS = {
+    "desktop": "Desktop",
+    "documents": "Documents",
+    "downloads": "Downloads",
+    "pictures": "Pictures",
+    "movies": "Movies",
+    "music": "Music",
+}
+
+_MAX_SHELL_LINES = 40
+
+
+def _run_command_tool(params: dict):
+    """Run one shell command through the shell MCP server.
+
+    Going through mcp_shell (never subprocess) is what streams every stdout /
+    stderr line to the terminal block as `terminal_output` events and emits
+    `terminal_exit` with the return code.
+    """
+    params = params or {}
+    command = str(params.get("command") or params.get("cmd") or "").strip()
+    if not command:
+        return False, "Which command should I run, sir?"
+    cwd = params.get("cwd") or None
+    if isinstance(cwd, str):
+        cwd = cwd.strip() or None
+        if cwd and (cwd.startswith("~") or not os.path.isabs(cwd)):
+            cwd = os.path.expanduser(cwd)
+    try:
+        timeout = float(params.get("timeout") or 30.0)
+    except (TypeError, ValueError):
+        timeout = 30.0
+    result = mcp_shell.run_command(command, cwd=cwd, timeout=timeout)
+    code = result.get("returncode")
+    stdout = (result.get("stdout") or "").strip()
+    stderr = (result.get("stderr") or "").strip()
+    if code == 0:
+        text = stdout or "(no output)"
+    else:
+        text = stderr or stdout or "The command produced no output."
+    lines = text.splitlines()
+    if len(lines) > _MAX_SHELL_LINES:
+        text = "\n".join(lines[:_MAX_SHELL_LINES]) + (
+            f"\n… {len(lines) - _MAX_SHELL_LINES} more line(s)"
+        )
+    if result.get("timed_out"):
+        return False, f"{text}\n(command timed out after {timeout:g}s)"
+    if code not in (0, None):
+        return False, f"{text}\n(exit {code})"
+    return True, text
+
+
+def _resolve_target_dir(directory) -> str:
+    """Map a model-provided location onto a real directory under $HOME."""
+    raw = str(directory or "").strip()
+    home = os.path.expanduser("~")
+    if not raw:
+        return os.path.join(home, "Desktop")
+    if raw.startswith("~") or os.path.isabs(raw):
+        return os.path.expanduser(raw)
+    known = _HOME_DIRS.get(raw.lower())
+    if known:
+        return os.path.join(home, known)
+    if raw.lower() in ("home", "home folder"):
+        return home
+    return os.path.join(home, raw)
+
+
+def _target_path(name: str, directory) -> str:
+    name = str(name or "").strip()
+    if os.path.isabs(name):
+        return name
+    return os.path.join(_resolve_target_dir(directory), name)
+
+
+def _create_file_tool(params: dict):
+    params = params or {}
+    name = str(
+        params.get("file_name") or params.get("filename") or params.get("name") or ""
+    ).strip()
+    if not name:
+        return False, "What should I name the file, sir?"
+    path = _target_path(name, params.get("path") or params.get("directory"))
+    content = params.get("content")
+    content = "" if content is None else str(content)
+    result = mcp_shell.write_file(path, content)
+    written = result.get("bytes", len(content.encode("utf-8")))
+    return True, f"Created {path} ({written} bytes), sir."
+
+
+def _create_folder_tool(params: dict):
+    params = params or {}
+    name = str(
+        params.get("folder_name") or params.get("directory_name")
+        or params.get("name") or ""
+    ).strip()
+    if not name:
+        return False, "What should I name the folder, sir?"
+    path = _target_path(name, params.get("path") or params.get("directory"))
+    mcp_shell.make_dirs(path)
+    return True, f"Created folder {path}, sir."
+
+
 def _confirm_whatsapp_tool(params: dict = None):
     pending = get_memory("pending_whatsapp") or {}
-    last = get_memory("last_whatsapp_request") or {}
-    src = pending if (pending or {}).get("message") else last
-    if not (src or {}).get("message"):
-        return False, "There is no WhatsApp message waiting to be sent, sir."
+    if not isinstance(pending, dict) or not pending.get("awaiting_confirm") or not pending.get("message"):
+        return False, "There is no WhatsApp message waiting for confirmation, sir."
     success, result = confirm_send_whatsapp_message()
     if success:
         save_memory("pending_whatsapp", None)
@@ -168,7 +281,12 @@ def _cancel_whatsapp_tool(params: dict = None):
 
 
 TOOL_MAP = {
-    "open_app": lambda params: open_app(params.get("app", "notepad")),
+    "open_app": lambda params: open_app(params.get("app", "textedit")),
+    "search_files": lambda params: _search_files_tool(params),
+    # Terminal path — every call streams into the in-app terminal block.
+    "run_command": lambda params: _run_command_tool(params),
+    "create_file": lambda params: _create_file_tool(params),
+    "create_folder": lambda params: _create_folder_tool(params),
     "send_whatsapp": lambda params: _send_whatsapp_tool(params),
     "send_whatsapp_all": lambda params: _send_whatsapp_all_tool(params),
     "confirm_whatsapp_send": lambda params: _confirm_whatsapp_tool(params),

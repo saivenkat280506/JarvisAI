@@ -4,23 +4,20 @@ responses.py — Concise Voice Responses
 """
 
 RESPONSES = {
-    # Bridging responses (immediate)
-    "open_app_start": "Initiating application startup, sir.",
-    "send_whatsapp_start": "Preparing transmission.",
-    "play_music_start": "Accessing the media archives.",
-    "search_start": "Scanning global knowledge nodes.",
-    "general_start": "Processing your request, sir.",
-    
-    # Final responses (completion)
-    "open_app_success": "Interface deployed.",
-    "open_app_fail": "I encountered an error while launching the application.",
-    "send_whatsapp_success": "WhatsApp message sent, sir.",
-    "send_whatsapp_fail": "Communication link failed.",
-    "play_music_success": "Audio stream established.",
-    "play_music_fail": "The requested media could not be located.",
-    "search_success": "The results are ready for your review.",
-    "search_fail": "The analysis yielded no results.",
-    "unknown": "I'm afraid I don't have the protocol for that, sir.",
+    "open_app_start": "Will do, sir.",
+    "send_whatsapp_start": "Working on it, sir.",
+    "play_music_start": "As you wish.",
+    "search_start": "Looking that up, sir.",
+    "general_start": "On it, sir.",
+    "open_app_success": "Done, sir.",
+    "open_app_fail": "I couldn't open that, sir.",
+    "send_whatsapp_success": "Sent, sir.",
+    "send_whatsapp_fail": "That didn't go through, sir.",
+    "play_music_success": "Playing now, sir.",
+    "play_music_fail": "I couldn't find that track, sir.",
+    "search_success": "Query complete, sir.",
+    "search_fail": "Nothing useful came back, sir.",
+    "unknown": "I don't have a protocol for that, sir.",
     "standby": "At your service, sir.",
 }
 

@@ -16,12 +16,13 @@ _AVOID = (
     "primary sound capture",
 )
 _PREFER = (
+    "macbook",
+    "built-in",
     "microphone",
     "headset",
+    "airpods",
     "headphone",
     "array",
-    "webcam",
-    "realtek",
     "usb audio",
     "mic",
 )

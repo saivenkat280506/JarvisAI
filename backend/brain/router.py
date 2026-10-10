@@ -172,8 +172,9 @@ def _split_contact_and_message(rest: str) -> tuple:
     # Default: first word = contact, remainder = message
     parts = rest.split(None, 1)
     if len(parts) == 1:
-        return parts[0], ""
-    return parts[0], _strip_trailing_contact(parts[1].strip().strip("\"'"), parts[0])
+        return parts[0].strip(".,:;-"), ""
+    contact = parts[0].strip(".,:;-")
+    return contact, _strip_trailing_contact(parts[1].strip().strip("\"'"), contact)
 
 
 def _same_saved_number(contacts: dict, names: list) -> bool:
@@ -191,6 +192,29 @@ def _strip_trailing_contact(message: str, contact: str) -> str:
         message,
         flags=re.IGNORECASE,
     ).strip(" \t,.:;-\"'")
+    # The echo is often spelled differently from the saved contact
+    # ("hi. satish" for a contact saved as "sathish").
+    if cleaned and cleaned != message:
+        return cleaned
+    tail = re.search(r"[\s,.:;-]+([A-Za-z][A-Za-z\s]{0,24}?)\s*$", cleaned or message)
+    if not tail:
+        return cleaned
+    echo = tail.group(1).strip()
+    try:
+        from difflib import SequenceMatcher
+
+        from executor.automation import _load_whatsapp_contacts
+
+        candidates = _load_whatsapp_contacts()
+    except Exception:
+        return cleaned
+    best = [
+        name
+        for name in candidates
+        if SequenceMatcher(None, echo.lower(), name.lower()).ratio() >= 0.7
+    ]
+    if len(best) == 1:
+        return message[: tail.start()].strip(" \t,.:;-\"'")
     return cleaned
 
 
@@ -247,6 +271,60 @@ def _route_all_contacts_send(text: str, text_clean: str):
     return "send_whatsapp_all", {"message": message}
 
 
+# Commands the terminal runner is allowed to treat as a shell request without
+# extra flags/paths in the phrase ("run ls -la", "run date", "run find .").
+_SHELL_BUILTINS = {
+    "ls", "pwd", "cd", "cat", "echo", "date", "whoami", "uname", "df", "du",
+    "find", "grep", "mkdir", "touch", "cp", "mv", "rm", "open", "head",
+    "tail", "wc", "sort", "uniq", "ps", "kill", "curl", "wget", "git",
+    "npm", "node", "python", "python3", "brew", "say", "env", "which",
+    "tree", "tar", "zip", "unzip", "code", "afplay", "screencapture",
+}
+
+
+def _looks_like_shell_command(payload: str) -> bool:
+    """True when the phrase carries shell shape: flags, paths, pipes or a
+    known builtin as the first word. Keeps "run agent" and vague one-word
+    launches out of the terminal path."""
+    text = (payload or "").strip()
+    if not text:
+        return False
+    if re.search(r"[|;&><$`]", text):
+        return True
+    if re.search(r"(?:^|\s)[~.]{0,2}/\S|(?:^|\s)-{1,2}\w", text):
+        return True
+    if re.search(r"\.\w{1,7}$", text.split()[0]):
+        return True
+    head = text.split()[0].lower().rstrip(".,:;")
+    return head in _SHELL_BUILTINS
+
+
+def parse_search_query(text: str) -> str | None:
+    """Extract clean query for browser web search, ignoring greetings and instructions."""
+    req_m = re.search(r"(?:^|\n)\s*Request:\s*(.+)$", text, re.IGNORECASE | re.DOTALL)
+    if req_m:
+        cand = req_m.group(1).strip()
+        if cand.lower().rstrip(".?!, ") in ["hi", "hello", "hey", "jarvis", "wake up"]:
+            return None
+        text = cand
+
+    patterns = [
+        r"^(?:please\s+)?search\s+(?:the\s+)?(?:web|internet|google)\s+(?:for\s*:?\s*|:?\s*)(.+)$",
+        r"^(?:please\s+)?search\s+(?:online|internet)\s+(?:for\s*:?\s*|:?\s*)(.+)$",
+        r"^(?:please\s+)?search\s+for\s+(.+)$",
+        r"^(?:please\s+)?google\s+(.+)$",
+        r"^(?:please\s+)?(?:deep\s+)?research\s+(?:on\s*:?\s*|about\s*:?\s*|for\s*:?\s*|the\s+web\s+for\s*:?\s*|:\s*)(.+)$",
+        r"\b(?:search\s+for|google)\s+(.+)$",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            q = m.group(1).strip().strip(":\"'")
+            if q and q.lower().rstrip(".?!, ") not in ["hi", "hello", "hey", "jarvis", "wake up"]:
+                return q
+    return None
+
+
 def route_command(text: str):
     """
     Analyzes input text and routes it to a specific intent if it's a clear command.
@@ -254,8 +332,33 @@ def route_command(text: str):
     Returns:
         tuple: (intent, parameters) or (None, None) if LLM is needed.
     """
+    original_text = text
     text = _strip_wake_prefix(text)
     text_clean = text.rstrip(".?!, ").strip()
+
+    # Case-preserved copy of the utterance (wake word removed). Every legacy
+    # rule below matches the lowercased `text`, but shell commands and file
+    # names are case-sensitive — "run cat README.md" must not become readme.md.
+    shell_input = original_text.strip()
+    _low = shell_input.lower()
+    for _prefix in sorted(_WAKE_PREFIXES, key=len, reverse=True):
+        if _low == _prefix:
+            shell_input = ""
+            break
+        if _low.startswith(_prefix + " "):
+            shell_input = shell_input[len(_prefix) + 1:].strip()
+            break
+    shell_input = shell_input.rstrip(".?!, ")
+
+    # If the input contains a structured prompt block with "Request: <actual_prompt>"
+    req_block = re.search(r"(?:^|\n)\s*Request:\s*(.+)$", text, re.IGNORECASE | re.DOTALL)
+    if req_block:
+        cand_text = req_block.group(1).strip()
+        cand_clean = _strip_wake_prefix(cand_text).rstrip(".?!, ").strip().lower()
+        if not cand_clean or any(k == cand_clean for k in ["hi", "hello", "hey", "jarvis", "wake up"]) or _GREETING_RE.match(cand_clean):
+            return "greeting", {}
+        text = cand_text
+        text_clean = cand_clean
 
     # 0. Intent: greeting — hi, hello, hi jarvis, good morning, etc.
     if not text_clean or text_clean == "jarvis":
@@ -264,6 +367,124 @@ def route_command(text: str):
         return "greeting", {}
     if _GREETING_RE.match(text_clean):
         return "greeting", {}
+    if re.match(
+        r"^(?:what'?s\s+up|whats\s+up|sup|how(?:'s| is) it going|how are you|"
+        r"how(?:'re| are) you doing)(?:\s+jarvis)?$",
+        text_clean,
+        re.IGNORECASE,
+    ):
+        return "status", {}
+
+    # Local file-name lookup is a shell-MCP operation. Keep it ahead of web
+    # search routing so "find the README file" never sends anything online.
+    local_search = re.match(
+        r"^(?:please\s+)?(?:find|search(?:\s+for)?|locate|look\s+for)\s+(.+)$",
+        text_clean,
+        re.IGNORECASE,
+    )
+    local_markers = re.search(
+        r"\b(?:file|files|document|documents|folder|directory|on my computer|in my files)\b",
+        text_clean,
+        re.IGNORECASE,
+    )
+    if local_search and local_markers and not re.search(
+        r"\b(?:online|internet|web|google)\b", text_clean, re.IGNORECASE
+    ):
+        query = local_search.group(1).strip().strip(" .?!,'\"")
+        query = re.sub(
+            r"\s+(?:in|on)\s+(?:(?:my|the)\s+)?(?:computer|files|folders?|directories|project(?:\s+folder)?)$",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        ).strip()
+        query = re.sub(
+            r"^(?:the\s+)?(?:file|document|folder|directory)\s+(?:named|called)\s+",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        ).strip()
+        query = re.sub(r"\s+(?:file|document|folder|directory)$", "", query, flags=re.I).strip()
+        query = re.sub(r"^(?:the|a|an)\s+", "", query, flags=re.I).strip()
+        if query:
+            return "search_files", {"query": query}
+
+    # Local file/folder creation. Stays ahead of browser routing so
+    # "create a folder on the desktop" never leaves this machine.
+    create_match = re.match(
+        r"^(?:please\s+|just\s+)?(?:create|make|new)\s+(?:a\s+|an\s+|my\s+)?"
+        r"(?:new\s+)?(folder|directory|file)\b\s*(.*)$",
+        shell_input,
+        re.IGNORECASE,
+    )
+    if create_match:
+        kind = create_match.group(1).lower()
+        rest = (create_match.group(2) or "").strip().strip(" .?!")
+        content = ""
+        content_match = re.search(
+            r"\s+(?:with|containing|saying|that\s+says|text\s+|content\s+)"
+            r"\s*(.+)$",
+            rest,
+            re.IGNORECASE,
+        )
+        if content_match and kind == "file":
+            content = content_match.group(1).strip().strip(" .?!\"'")
+            content = re.sub(
+                r"^(?:content|text)\s+", "", content, flags=re.IGNORECASE
+            ).strip()
+            rest = rest[: content_match.start()].strip()
+        directory = ""
+        location_match = re.search(
+            r"\s+(?:on|in|to)\s+(?:the\s+|my\s+)?"
+            r"(desktop|documents|downloads|pictures|home)\s*$"
+            r"|\s+(?:on|in|to)\s+(~?/[\w./-]+)\s*$",
+            rest,
+            re.IGNORECASE,
+        )
+        if location_match:
+            directory = (location_match.group(1) or "").strip()
+            rest = rest[: location_match.start()].strip()
+        name = re.sub(
+            r"^(?:called|named|titled)\s+", "", rest, flags=re.IGNORECASE
+        ).strip(" .?!'\"")
+        if name:
+            if kind in ("folder", "directory"):
+                params = {"folder_name": name}
+                if directory:
+                    params["path"] = directory
+                return "create_folder", params
+            params = {"file_name": name}
+            if directory:
+                params["path"] = directory
+            if content:
+                params["content"] = content
+            return "create_file", params
+
+    # Only LIVE/changed facts need browser evidence (latest version, current
+    # price, score…). Ordinary knowledge questions ("what is X", "who is X",
+    # "tell me about X") go to the local `qa` path — spec: local-first, and
+    # a browser round-trip on a factual question costs 10-30s vs <1.5s.
+    if (
+        re.search(r"\b(?:latest|current)\b", text_clean, re.IGNORECASE)
+        and not re.search(
+            r"\b(?:time|date|hour|day|morning|afternoon|evening)\b",
+            text_clean,
+            re.IGNORECASE,
+        )
+        and not re.search(
+            r"\bon\s+(?:the\s+)?(?:internet|web|google)\b", text_clean, re.IGNORECASE
+        )
+    ):
+        return "search_browser", {"query": text_clean}
+
+    # Short follow-up after the last turn ("why" after a joke, etc.)
+    if re.match(
+        r"^(?:why|why\??|why\s+though|why\s+is\s+that|why\s+not|"
+        r"i\s+don'?t\s+get\s+it|explain(?:\s+it|\s+that)?|"
+        r"what\s+do\s+you\s+mean|huh|and\??)$",
+        text_clean,
+        re.IGNORECASE,
+    ):
+        return "followup", {}
 
     # 0b. "Wake up. Daddy's home." — garage music + volume 50 + time-based welcome
     if re.search(
@@ -461,6 +682,51 @@ def route_command(text: str):
             params["name"] = target
         return "send_whatsapp", params
 
+    # "type hi to sathish" / "can you just type hi to sathish in whatsapp".
+    # Same verb family as send/text: the draft lands in the message box and is
+    # never sent (WhatsApp send is frozen). Must run before the loose
+    # "whatsapp … to …" rules or they would swallow the message body.
+    # Only these rules strip the polite opener, so every other route still
+    # sees the raw text.
+    polite = re.sub(
+        r"^(?:(?:you\s+)?(?:can|could|would|will|may|might|please|just|simply|kindly)"
+        r"(?:\s+you)?\s+|(?:hey|ok|okay|jarvis)[,\s]+)+",
+        "",
+        text_clean,
+        flags=re.IGNORECASE,
+    ).strip()
+    wa_type_to_name = re.match(
+        r"^(?:type|write|key(?:\s+in)?)\s+(?!message\b)[\"']?(.+?)[\"']?\s+"
+        r"(?:on|in|via|through)\s+(?:the\s+)?whatsapp\s+to\s+"
+        r"([A-Za-z][A-Za-z\s]*?)$",
+        polite,
+        re.IGNORECASE,
+    )
+    if not wa_type_to_name:
+        # "type hi to sathish in whatsapp"
+        wa_type_to_name = re.match(
+            r"^(?:type|write|key(?:\s+in)?)\s+(?!message\b)[\"']?(.+?)[\"']?\s+to\s+"
+            r"([A-Za-z][A-Za-z\s]*?)"
+            r"(?:\s+(?:on|in|via|through)\s+(?:the\s+)?whatsapp)?$",
+            polite,
+            re.IGNORECASE,
+        )
+    if wa_type_to_name:
+        type_msg = wa_type_to_name.group(1).strip().strip("\"'")
+        type_name = wa_type_to_name.group(2).strip()
+        if type_msg and type_name:
+            # Without an explicit WhatsApp mention, only claim the route when
+            # the target is a saved contact ("type hi to sathish").
+            if re.search(r"\bwhatsapp\b", text, re.IGNORECASE):
+                return "send_whatsapp", {"name": type_name, "message": type_msg}
+            try:
+                from executor.automation import _load_whatsapp_contacts
+                saved_contacts = _load_whatsapp_contacts()
+            except Exception:
+                saved_contacts = {}
+            if type_name.lower() in saved_contacts:
+                return "send_whatsapp", {"name": type_name, "message": type_msg}
+
     # Matches: "open whatsapp and search [for] +91..." / "open whatsapp for sathish"
     wa_search = re.search(
         r"(?:open\s+)?whatsapp\s+(?:(?:and\s+)?search\s+(?:for\s+)?|for\s+|to\s+)(.+)$",
@@ -521,8 +787,8 @@ def route_command(text: str):
     wa_to_name = re.search(
         r"^(?:send|text)\s+(?!message\b)[\"']?(.+?)[\"']?\s+to\s+"
         r"([A-Za-z][A-Za-z\s]*?)"
-        r"(?:\s+on\s+whatsapp)?$",
-        text_clean,
+        r"(?:\s+(?:on|in)\s+(?:the\s+)?whatsapp)?$",
+        polite,
         re.IGNORECASE,
     )
     if wa_to_name:
@@ -579,7 +845,7 @@ def route_command(text: str):
     if text_clean in {"restart music", "replay music", "play again"}:
         return "music_control", {"action": "restart"}
 
-    # 1c. System volume control (Windows master 0–100, not music)
+    # 1c. System volume control (OS master 0–100, not music)
     if "music" not in text:
         set_vol = re.search(
             r"^set\s+(?:the\s+)?volume\s+(?:at|to)\s+(\d{1,3})$"
@@ -706,7 +972,7 @@ def route_command(text: str):
 
     # 4. Intent: open_app
     # Matches: "open chrome", "open spotify"
-    open_match = re.search(r"open\s+([a-zA-Z0-9\-\.\s]+)", text)
+    open_match = re.search(r"\bopen\s+([a-zA-Z0-9\-\.\s]+)", text, re.IGNORECASE)
     if open_match:
         app_name = open_match.group(1).replace(" please", "").strip()
         # Only accept if it looks like a simple app name
@@ -735,14 +1001,27 @@ def route_command(text: str):
         return "time", time_params
 
     # 5. Intent: news / headlines (must be checked BEFORE search_browser)
-    if any(k in text for k in ["news", "headlines", "latest news", "what's happening", "top stories", "news summary", "headlines summary", "read summary"]):
+    asks_for_current_events = bool(re.search(
+        r"\b(?:what(?:'|’)?s|what\s+is)\s+(?:happening|going\s+on)\b",
+        text,
+    ))
+    names_news_scope = bool(re.search(
+        r"\b(?:world|global|international)\s+(?:news|headlines|current\s+events)\b|"
+        r"\baround\s+the\s+world\b",
+        text,
+    ))
+    if (
+        any(k in text for k in ["news", "headlines", "top stories", "news summary", "headlines summary", "read summary"])
+        or asks_for_current_events
+        or names_news_scope
+    ):
         return "news", {}
 
     # 6. Intent: search_browser
-    # Matches: "search for newton's law", "google newton's law"
-    search_match = re.search(r"(?:search\s+(?:for\s+)?|google\s+)(.+)", text)
-    if search_match:
-        return "search_browser", {"query": search_match.group(1).strip()}
+    # Matches: "search for newton's law", "google newton's law", "search the web for AI", "research on AI"
+    search_query = parse_search_query(text)
+    if search_query:
+        return "search_browser", {"query": search_query}
 
     # Spoken "on the internet / look up" — answer in voice, do not open a browser.
     on_web = re.match(
@@ -777,12 +1056,35 @@ def route_command(text: str):
             return "cancel_task", {"task_type": "all"}
 
     # 8. Intent: joke
-    # Word-boundary match so "joker" or "no joke" don't trigger
-    if re.search(r"\btell\s+me\s+a\s+joke\b|\bmake\s+me\s+laugh\b|\bsay\s+something\s+funny\b|^joke$", text_clean):
+    # Word-boundary match so "joker" or "no joke" don't trigger; optional filler
+    # adjectives so "tell me a short witty joke" still routes here.
+    if re.search(r"\btell\s+me\s+(?:a\s+|an?\s+)?[\w,\s-]{0,30}?\bjoke\b|\bmake\s+me\s+laugh\b|\bsay\s+something\s+funny\b|^joke$", text_clean, re.IGNORECASE):
         return "joke", {"style": "short, witty"}
 
+    # 8d. Intent: screenshot — capture screen to Desktop (skill: vision).
+    if re.search(r"\b(?:take|grab|snap|capture)(?:\s+\w+){0,3}\s+(?:a\s+)?(?:screenshot|screen\s+shot)\b|"
+                 r"^\s*(?:a\s+)?screenshot\s*$|\bscreen\s+capture\b|"
+                 r"\bcapture\s+(?:my\s+|the\s+)?screen\b|\bprint\s+screen\b",
+                 text_clean, re.IGNORECASE):
+        return "screenshot", {}
+
+    # 8e. Intent: see_screen — capture + describe the screen with the vision model.
+    if re.search(r"what\s+(?:can\s+you|do\s+you)\s+see|"
+                 r"what'?s\s+(?:on|happening\s+on)\s+(?:my\s+|the\s+)?screen\b|"
+                 r"describe\s+(?:my\s+|the\s+)?screen|"
+                 r"look\s+at\s+(?:my\s+|the\s+)?screen|"
+                 r"can\s+you\s+see\s+(?:my|the)\s+screen",
+                 text_clean, re.IGNORECASE):
+        return "see_screen", {}
+
     # 9. Intent: qa (General Knowledge)
-    if re.search(r"^(what is|what are|who is|who are|how do|tell me about|explain|why is|why are|where is|when did|what's|who's)\b", text):
+    # Kept as one rule so plain questions never fall through to the LLM router
+    # (a 2.5s round-trip on this machine) — only vague/conversational text does.
+    if re.search(r"^(what is|what are|who is|who are|how do|tell me about|explain|why is|why are|where is|when did|what's|who's|"
+                 r"what should|what would|how should|how would|why should|"
+                 r"summarize|summarise|give me (?:a )?(?:summary|overview)|"
+                 r"what do you (?:suggest|recommend)|do you (?:suggest|recommend)|"
+                 r"advise me|any advice)\b", text, re.IGNORECASE):
         return "qa", {"query": text}
 
     # 9. Intent: introduce / who are you
@@ -813,6 +1115,28 @@ def route_command(text: str):
         return "browser_navigate", {"url": re.search(r"navigate to\s+(https?://\S+)", text).group(1)}
     if re.search(r"\b(open|go to)\s+(https?://\S+)", text):
         return "browser_navigate", {"url": re.search(r"(https?://\S+)", text).group(1)}
+
+    # 9b. Intent: run_command — explicit terminal verbs only, and only when the
+    # payload reads as a shell command (flags, paths, pipes, known builtin).
+    # "run the demo" / "run agent" stay with the browser and agent rules.
+    shell_match = re.match(
+        r"^(?:please\s+|just\s+)?(?:run|execute|shell|terminal|cmd)\s+(?:the\s+)?"
+        r"(?:command|script|shell\s+command|terminal\s+command)?\s*[:\-]?\s*(.+)$",
+        shell_input,
+        re.IGNORECASE,
+    )
+    if shell_match:
+        payload = shell_match.group(1).strip().strip("`\"'")
+        is_agent = re.search(r"\bagent\b", payload, re.IGNORECASE)
+        if payload and not is_agent:
+            if _looks_like_shell_command(payload):
+                command = payload
+                if command.lower().startswith("the command "):
+                    command = command[12:].strip()
+                return "run_command", {"command": command}
+            if re.fullmatch(r"[A-Za-z][A-Za-z0-9 .-]{1,40}", payload):
+                # "run spotify" / "run calculator" — launch the app instead.
+                return "open_app", {"app": payload}
 
     # 10. Intent: web_agent — autonomous click/browse/automate tasks
     agent_triggers = [

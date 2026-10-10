@@ -1,16 +1,17 @@
 """
-volume_control.py — Windows System Volume (0–100)
-=================================================
-Precise master volume control via Windows Core Audio API.
-Also manages temporary levels during garage-music sessions
-(play 50% / speak 25% / listen 20% on the real Windows slider).
+volume_control.py — macOS system volume (0–100)
+==============================================
+Uses AppleScript output volume. Also manages temporary levels during
+garage-music sessions (play 50% / speak 25% / listen 20%).
 """
 
-from pycaw.utils import AudioUtilities
-from pycaw.pycaw import IAudioEndpointVolume
-from comtypes import CLSCTX_ALL, cast, POINTER
+from executor.sys_platform import (
+    get_output_volume,
+    is_output_muted as _is_output_muted,
+    set_output_muted,
+    set_output_volume,
+)
 
-# Garage music session: Windows master volume targets
 GARAGE_PLAY_VOLUME = 50
 GARAGE_SPEAK_VOLUME = 25
 GARAGE_LISTEN_VOLUME = 20
@@ -19,80 +20,62 @@ _garage_session = False
 _volume_before_garage: int | None = None
 
 
-def _endpoint():
-    device = AudioUtilities.GetSpeakers()
-    if device is None:
-        raise RuntimeError("No audio output device found.")
-    interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-    return cast(interface, POINTER(IAudioEndpointVolume))
-
-
 def get_volume() -> int:
-    """Return current system master volume as 0–100."""
-    return round(_endpoint().GetMasterVolumeLevelScalar() * 100)
+    return get_output_volume()
 
 
 def is_muted() -> bool:
-    return bool(_endpoint().GetMute())
+    return _is_output_muted()
 
 
 def set_volume(level: int) -> tuple[bool, str]:
     level = max(0, min(100, int(level)))
-    vol = _endpoint()
-    vol.SetMute(0, None)
-    vol.SetMasterVolumeLevelScalar(level / 100.0, None)
+    set_output_muted(False)
+    set_output_volume(level)
     return True, f"Volume set to {level}, sir."
 
 
 def begin_garage_volume_session(play_level: int = GARAGE_PLAY_VOLUME) -> int:
-    """
-    Remember prior Windows volume and set play level (default 50%).
-    Returns the level applied.
-    """
     global _garage_session, _volume_before_garage
     try:
         if not _garage_session:
             _volume_before_garage = get_volume()
             _garage_session = True
         set_volume(play_level)
-        print(f"[Volume] Garage session ON — Windows volume {play_level}% (was {_volume_before_garage})")
+        print(f"[Volume] Garage session ON — system volume {play_level}% (was {_volume_before_garage})")
         return play_level
     except Exception as exc:
         print(f"[Volume] begin_garage_volume_session failed: {exc}")
         return play_level
 
 
-def set_windows_volume_safe(level: int) -> None:
+def set_system_volume(level: int) -> None:
     try:
         set_volume(int(level))
-        print(f"[Volume] Windows master -> {int(level)}%")
+        print(f"[Volume] System master -> {int(level)}%")
     except Exception as exc:
         print(f"[Volume] set failed: {exc}")
 
 
+# Kept so existing callers do not break.
+set_windows_volume_safe = set_system_volume
+
+
 def garage_volume_for_play() -> None:
-    """Windows volume while garage track plays normally."""
     if _garage_session:
-        set_windows_volume_safe(GARAGE_PLAY_VOLUME)
+        set_system_volume(GARAGE_PLAY_VOLUME)
 
 
 def garage_volume_for_speech() -> None:
-    """Windows volume while JARVIS speaks over the garage track (25%)."""
-    if _garage_session:
-        set_windows_volume_safe(GARAGE_SPEAK_VOLUME)
-    else:
-        # Still lower if music is playing without session flag
-        set_windows_volume_safe(GARAGE_SPEAK_VOLUME)
+    set_system_volume(GARAGE_SPEAK_VOLUME)
 
 
 def garage_volume_for_listen() -> None:
-    """Windows volume while listening to the user (20%)."""
     if _garage_session:
-        set_windows_volume_safe(GARAGE_LISTEN_VOLUME)
+        set_system_volume(GARAGE_LISTEN_VOLUME)
 
 
 def end_garage_volume_session(restore: bool = True) -> None:
-    """End garage session; optionally restore pre-session Windows volume."""
     global _garage_session, _volume_before_garage
     if not _garage_session:
         return
@@ -100,11 +83,8 @@ def end_garage_volume_session(restore: bool = True) -> None:
     _garage_session = False
     _volume_before_garage = None
     if restore and prev is not None:
-        try:
-            set_volume(prev)
-            print(f"[Volume] Garage session OFF — restored Windows volume {prev}%")
-        except Exception as exc:
-            print(f"[Volume] restore failed: {exc}")
+        set_system_volume(prev)
+        print(f"[Volume] Garage session OFF — restored {prev}%")
 
 
 def is_garage_volume_session() -> bool:
@@ -114,22 +94,20 @@ def is_garage_volume_session() -> bool:
 def adjust_volume(delta: int) -> tuple[bool, str]:
     current = get_volume()
     new_level = max(0, min(100, current + int(delta)))
-    vol = _endpoint()
-    vol.SetMute(0, None)
-    vol.SetMasterVolumeLevelScalar(new_level / 100.0, None)
+    set_output_muted(False)
+    set_output_volume(new_level)
     direction = "increased" if delta > 0 else "decreased"
     return True, f"Volume {direction} to {new_level}, sir."
 
 
 def mute_volume() -> tuple[bool, str]:
-    _endpoint().SetMute(1, None)
+    set_output_muted(True)
     return True, "Volume muted, sir."
 
 
 def unmute_volume() -> tuple[bool, str]:
-    vol = _endpoint()
-    vol.SetMute(0, None)
-    level = round(vol.GetMasterVolumeLevelScalar() * 100)
+    set_output_muted(False)
+    level = get_volume()
     return True, f"Volume unmuted at {level}, sir."
 
 

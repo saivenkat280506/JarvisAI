@@ -14,18 +14,18 @@ RESPONSE_MAP = {
         "fail": ["I'm sorry, I couldn't respond to that."]
     },
     "open_app": {
-        "start": ["Opening {app}, sir.", "Launching {app}, sir.", "Right away, sir. Opening {app}.", "Searching system path for {app} and initiating startup."],
-        "success": ["Done, sir.", "Application ready, sir.", "All set, sir.", "Interface deployed, sir."],
-        "fail": ["I couldn’t open {app}, sir.", "Unable to locate {app}, sir.", "It appears {app} is not responding or missing from registry."]
+        "start": ["Opening {app}, sir.", "Will do, sir.", "As you wish."],
+        "success": ["Done, sir.", "Ready, sir.", "Check."],
+        "fail": ["I couldn't open {app}, sir.", "Unable to locate {app}, sir."]
     },
     "send_whatsapp": {
-        "start": ["Opening WhatsApp and loading the chat, sir."],
-        "success": ["WhatsApp message sent, sir."],
+        "start": ["Preparing the WhatsApp draft, sir."],
+        "success": ["The WhatsApp draft is ready, sir. Nothing was sent."],
         "fail": ["Could not open WhatsApp contact, sir."]
     },
     "send_whatsapp_all": {
-        "start": ["Sending to saved contacts only, sir."],
-        "success": ["Sent to the saved contacts, sir."],
+        "start": ["Preparing the WhatsApp message for saved contacts, sir."],
+        "success": ["The bulk WhatsApp request is ready for confirmation, sir. Nothing was sent."],
         "fail": ["I could not finish sending to every saved contact, sir."]
     },
     "remember": {
@@ -85,14 +85,14 @@ RESPONSE_MAP = {
         "fail": ["Couldn't adjust volume, sir."],
     },
     "search_browser": {
-        "start": ["Searching for {query}, sir.", "Scanning the web, sir.", "Looking it up, sir.", "Querying global knowledge nodes for {query}."],
-        "success": ["Information retrieved, sir.", "Found it, sir.", "Results are ready, sir.", "Analysis complete, sir. Results uploaded."],
-        "fail": ["No results found, sir.", "Couldn't find that, sir.", "The search yielded no significant data, sir."]
+        "start": ["Looking that up, sir.", "Searching, sir.", "On it."],
+        "success": ["Query complete, sir.", "Found it, sir.", "Results are ready, sir."],
+        "fail": ["Nothing useful, sir.", "I couldn't find that, sir."]
     },
     "general": {
-        "start": ["On it, sir.", "Working on it, sir.", "Right away, sir.", "Acknowledged, sir. Processing request."],
-        "success": ["Task completed, sir.", "Done, sir.", "All set, sir.", "Operations complete, sir."],
-        "fail": ["I couldn’t complete that, sir.", "Task failed, sir.", "Internal systems were unable to fulfill the request."]
+        "start": ["On it, sir.", "Working on it, sir.", "As you wish."],
+        "success": ["Done, sir.", "All set, sir.", "Check."],
+        "fail": ["I couldn't complete that, sir.", "That didn't take, sir."]
     },
     "news": {
         "start": ["Checking the latest headlines, sir.", "Pulling the news feed, sir.", "Scanning current events."],
@@ -191,10 +191,12 @@ def respond_processing() -> str:
     ])
 
 
-def _daypart() -> str:
-    """morning | noon | afternoon | evening | night"""
-    hour = datetime.now().hour
-    if 5 <= hour < 12:
+def _daypart(now: datetime | None = None) -> str:
+    """early_morning | morning | noon | afternoon | evening | night | late_night"""
+    hour = (now or datetime.now()).hour
+    if 5 <= hour < 9:
+        return "early_morning"
+    if 9 <= hour < 12:
         return "morning"
     if 12 <= hour < 14:
         return "noon"
@@ -202,7 +204,85 @@ def _daypart() -> str:
         return "afternoon"
     if 17 <= hour < 21:
         return "evening"
-    return "night"
+    if 21 <= hour or hour < 2:
+        return "night"
+    return "late_night"
+
+
+def _clock_label(now: datetime | None = None) -> str:
+    """Spoken-friendly clock, e.g. '11:42 PM'."""
+    now = now or datetime.now()
+    hour12 = now.hour % 12 or 12
+    meridiem = "AM" if now.hour < 12 else "PM"
+    return f"{hour12}:{now.minute:02d} {meridiem}"
+
+
+def launch_greeting_line(now: datetime | None = None) -> str:
+    """
+    First line JARVIS speaks when the desktop app comes online.
+    Canonical lines plus close variants, keyed to the local hour.
+    """
+    now = now or datetime.now()
+    part = _daypart(now)
+    clock = _clock_label(now)
+    weekday = now.strftime("%A")
+    weekend = weekday in ("Saturday", "Sunday")
+
+    if part == "early_morning":
+        lines = [
+            "Early to work today, sir. How may I help you?",
+            "You're in early, sir. Systems are online. How may I help you?",
+            "Good morning, sir. Early start. How may I help you?",
+        ]
+        if weekday == "Monday":
+            lines.append("Monday morning already, sir. Systems are online. How may I help you?")
+        if weekend:
+            lines.append("Weekend morning, sir. You're up early. How may I help you?")
+        return random.choice(lines)
+
+    if part == "morning":
+        lines = [
+            "Good morning, sir. Systems are online. How may I help you?",
+            "Morning, sir. All systems ready. How may I help you?",
+            "Systems online, sir. How may I help you?",
+        ]
+        if weekend:
+            lines.append("Weekend already, sir. Systems are online. How may I help you?")
+        return random.choice(lines)
+
+    if part == "noon":
+        return random.choice([
+            "It's midday, sir. How may I help you?",
+            f"It's {clock}, sir. Systems are online. How may I help you?",
+            "Noon already, sir. System is online. How may I help you?",
+        ])
+
+    if part == "afternoon":
+        return random.choice([
+            "System is online, sir. How may I help you?",
+            "Afternoon, sir. All systems operational. How may I help you?",
+            "Systems are online, sir. What can I do for you?",
+        ])
+
+    if part == "evening":
+        lines = [
+            "Evening, sir. Systems are online. How may I help you?",
+            f"It's {clock}, sir. Working into the evening? How may I help you?",
+            "Good evening, sir. How may I help you?",
+        ]
+        if weekday == "Friday":
+            lines.append("Friday evening, sir. Systems are online. How may I help you?")
+        return random.choice(lines)
+
+    # night / late night
+    lines = [
+        f"It's {clock}. Are we working on any project, sir?",
+        f"It's {clock}, sir. Burning the midnight oil? What do you need?",
+        f"It's {clock}. Still working, sir? How may I help you?",
+    ]
+    if part == "late_night":
+        lines.append(f"It's {clock}, sir. Late even for us. Are we working on any project?")
+    return random.choice(lines)
 
 
 def welcome_home_line() -> str:
@@ -211,7 +291,7 @@ def welcome_home_line() -> str:
     Used for "Wake up. Daddy's home." and default garage playback.
     """
     part = _daypart()
-    if part == "morning":
+    if part in ("early_morning", "morning"):
         return random.choice([
             "Welcome home, sir. Let me check your schedule for today. You have no pending tasks to do, sir. Have a nice day, sir.",
             "Welcome home, sir. I've reviewed your itinerary. No pending tasks. Have a nice day, sir.",
@@ -256,4 +336,4 @@ if __name__ == "__main__":
     print(f"Msg Success: {respond_success('send_whatsapp')}")
     print(f"Fail: {respond_fail('any')}")
     print(f"BG Response: {respond_background()}")
-
+    print(f"Launch: {launch_greeting_line()}")

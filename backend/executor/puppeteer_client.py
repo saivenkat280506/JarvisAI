@@ -1,14 +1,14 @@
 """
 puppeteer_client.py — Python client for the JARVIS Puppeteer control plane.
 ==========================================================================
-Starts browser-automation/src/server.mjs on demand and sends JSON commands.
+Starts backend/browser-automation/src/server.mjs on demand and sends JSON commands.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -16,15 +16,21 @@ from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-HOST = os.environ.get("PUPPETEER_HOST", "127.0.0.1")
+from mcp_clients import shell as mcp_shell
+
+HOST = "127.0.0.1"
 PORT = int(os.environ.get("PUPPETEER_PORT", "3920"))
 BASE = f"http://{HOST}:{PORT}"
 
-# JARVIS/browser-automation
-ROOT = Path(__file__).resolve().parents[2] / "browser-automation"
+# JARVIS/backend/browser-automation
+ROOT = Path(__file__).resolve().parents[1] / "browser-automation"
 SERVER_JS = ROOT / "src" / "server.mjs"
 
-_server_proc: Optional[subprocess.Popen] = None
+# Node control-plane is spawned via the shell MCP server (spawn_background);
+# we keep only its pid here. Documented service-bootstrap exception: the
+# process must outlive the request that started it, so it runs detached.
+_server_pid: Optional[int] = None
+_active_chrome_profile: str | None = None
 
 
 def _health(timeout: float = 1.5) -> bool:
@@ -36,126 +42,170 @@ def _health(timeout: float = 1.5) -> bool:
         return False
 
 
+def _ensure_chrome_profile_clone(profile_dir: str) -> Path:
+    """Keep a private JARVIS copy of the selected signed-in Chrome profile."""
+    clone_root = ROOT / "chrome-profile-data"
+    clone_profile = clone_root / profile_dir
+    if (clone_profile / "Preferences").is_file():
+        return clone_root
+
+    from executor.sys_platform import chrome_user_data
+
+    result = mcp_shell.run_command(
+        "node src/sync_chrome_profile.mjs",
+        cwd=str(ROOT),
+        timeout=300.0,
+        env={
+            "CHROME_USER_DATA": chrome_user_data(),
+            "CHROME_PROFILE_DIRECTORY": profile_dir,
+            "JARVIS_CHROME_PROFILE_DIRECTORY": profile_dir,
+        },
+    )
+    if result.get("returncode") != 0 or not (clone_profile / "Preferences").is_file():
+        detail = (result.get("stderr") or result.get("stdout") or "").strip()[:400]
+        raise RuntimeError(
+            f"Could not prepare the JARVIS copy of Chrome profile {profile_dir}. "
+            "Close that Chrome profile and try again. " + detail
+        )
+    return clone_root
+
+
 def ensure_server(start_if_needed: bool = True) -> bool:
     """Return True if the Puppeteer control plane is reachable."""
-    global _server_proc
+    global _server_pid, _active_chrome_profile
+    from brain.settings import get_settings
+    from executor.sys_platform import chrome_profile_directory_for_email, chrome_user_data
+
+    profile_email = str(
+        get_settings().get("chromeProfileEmail") or "user@example.com"
+    ).strip().lower()
+    profile_dir = chrome_profile_directory_for_email(profile_email)
+    if not profile_dir:
+        raise RuntimeError(
+            f"Chrome profile for {profile_email} was not found. Sign into that profile in Chrome, then try again."
+        )
+    profile_key = f"{profile_email}:{profile_dir}"
+    clone_root = _ensure_chrome_profile_clone(profile_dir)
+
     if _health():
-        return True
+        if _active_chrome_profile == profile_key:
+            return True
+        try:
+            payload = json.dumps({
+                "action": "configure_profile",
+                "params": {
+                    "userDataDir": str(clone_root),
+                    "profileDir": profile_dir,
+                    "useRealProfile": False,
+                },
+            }).encode("utf-8")
+            req = Request(
+                f"{BASE}/command",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(req, timeout=10.0) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "Chrome profile could not be selected.")
+            _active_chrome_profile = profile_key
+            return True
+        except Exception as exc:
+            print(f"[Puppeteer] Restarting control plane to apply Chrome profile: {exc}")
+            _kill_server()
+            _active_chrome_profile = None
     if not start_if_needed:
         return False
     if not SERVER_JS.exists():
         raise FileNotFoundError(f"Puppeteer server not found: {SERVER_JS}")
 
-    # Install deps once if needed
-    node_modules = ROOT / "node_modules" / "puppeteer"
+    # Install deps once if needed. Skip Puppeteer's Chrome-for-Testing download;
+    # macOS automation uses the installed Google Chrome binary.
+    node_modules = ROOT / "node_modules" / "puppeteer" / "package.json"
     if not node_modules.exists():
         print("[Puppeteer] Installing npm dependencies (first run)...")
-        subprocess.run(
-            ["npm", "install"],
+        result = mcp_shell.run_command(
+            "npm install",
             cwd=str(ROOT),
-            check=True,
-            shell=sys.platform == "win32",
+            timeout=600.0,
+            env={"PUPPETEER_SKIP_DOWNLOAD": "true"},
         )
-
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        if result.get("returncode") != 0:
+            raise RuntimeError(
+                f"npm install failed: {(result.get('stderr') or result.get('stdout') or '').strip()[:400]}"
+            )
 
     env = os.environ.copy()
     env.setdefault("PUPPETEER_HOST", HOST)
     env.setdefault("PUPPETEER_PORT", str(PORT))
-    clone = ROOT / "chrome-profile-data"
-
-    # Live Chrome User Data cannot be shared with an open Chrome window
-    # (SingletonLock). Default ALWAYS to the dedicated JARVIS clone.
-    # Opt into the live profile only with BOTH:
-    #   CHROME_USE_REAL_PROFILE=1  and  CHROME_ALLOW_LIVE_PROFILE=1
-    # (and close daily Chrome first).
-    allow_live = str(env.get("CHROME_ALLOW_LIVE_PROFILE", "0")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    want_real = str(env.get("CHROME_USE_REAL_PROFILE", "0")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    use_real = allow_live and want_real
-
-    if not use_real:
-        env["CHROME_USE_REAL_PROFILE"] = "0"
-        env["CHROME_USER_DATA"] = str(clone)
-        env["CHROME_KILL_BEFORE_LAUNCH"] = env.get("CHROME_KILL_BEFORE_LAUNCH") or "1"
-    else:
-        env["CHROME_USE_REAL_PROFILE"] = "1"
-        env.setdefault(
-            "CHROME_USER_DATA",
-            str(Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"),
-        )
-        env["CHROME_KILL_BEFORE_LAUNCH"] = "1"
-
+    env["PUPPETEER_SKIP_DOWNLOAD"] = "true"
+    from executor.sys_platform import chrome_executable
+    chrome_bin = chrome_executable()
+    if chrome_bin:
+        env.setdefault("CHROME_PATH", chrome_bin)
+        env.setdefault("PUPPETEER_EXECUTABLE_PATH", chrome_bin)
+    # Resolve the selected account to its Chrome profile directory before launching.
+    env["CHROME_USE_REAL_PROFILE"] = "0"
+    env["CHROME_USER_DATA"] = str(clone_root)
+    env["CHROME_PROFILE_EMAIL"] = profile_email
+    env["CHROME_PROFILE_DIRECTORY"] = profile_dir
     env["CHROME_FALLBACK_ON_LOCK"] = env.get("CHROME_FALLBACK_ON_LOCK") or "1"
-    env.setdefault("CHROME_PROFILE_DIRECTORY", "Default")
-    env.setdefault("CHROME_GOOGLE_EMAIL", "user@example.com")
-    env.setdefault("SPOTIFY_GOOGLE_EMAIL", "user@example.com")
 
     log_path = ROOT / "puppeteer-server.log"
     log_f = open(log_path, "a", encoding="utf-8")
     log_f.write(f"\n--- start {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-    log_f.write(f"CHROME_USE_REAL_PROFILE={env.get('CHROME_USE_REAL_PROFILE')}\n")
-    log_f.write(f"CHROME_PROFILE_DIRECTORY={env.get('CHROME_PROFILE_DIRECTORY')}\n")
-    log_f.write(f"CHROME_USER_DATA={env.get('CHROME_USER_DATA')}\n")
-    log_f.write(f"CHROME_KILL_BEFORE_LAUNCH={env.get('CHROME_KILL_BEFORE_LAUNCH')}\n")
+    log_f.write("Control plane requested by the browser MCP server.\n")
     log_f.flush()
+    log_f.close()
 
-    _server_proc = subprocess.Popen(
-        ["node", str(SERVER_JS)],
+    spawned = mcp_shell.spawn_background(
+        f"node {shlex.quote(str(SERVER_JS))}",
         cwd=str(ROOT),
+        log_path=str(log_path),
         env=env,
-        stdout=log_f,
-        stderr=log_f,
-        creationflags=creationflags,
     )
+    _server_pid = spawned.get("pid")
 
     # Wait for health
     deadline = time.time() + 45
     while time.time() < deadline:
         if _health(timeout=2.0):
+            _active_chrome_profile = profile_key
             print(f"[Puppeteer] Control plane ready at {BASE}")
             return True
-        if _server_proc.poll() is not None:
+        if not _server_pid or not mcp_shell.process_alive(_server_pid):
             break
         time.sleep(0.4)
 
     raise RuntimeError(
         f"Puppeteer server failed to start on {BASE}. "
-        f"Try: cd browser-automation && npm install && npm start"
+        f"Try: cd backend/browser-automation && npm install && npm start"
     )
 
 
 def _kill_server() -> None:
-    global _server_proc
-    if _server_proc and _server_proc.poll() is None:
+    global _server_pid
+    if _server_pid and mcp_shell.process_alive(_server_pid):
         try:
-            _server_proc.terminate()
-            _server_proc.wait(timeout=3)
-        except Exception:
-            try:
-                _server_proc.kill()
-            except Exception:
-                pass
-    _server_proc = None
-    # Free port + chrome locks left by crashed control plane
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "chrome.exe", "/T"],
-                capture_output=True,
-                check=False,
-            )
+            mcp_shell.kill_process(_server_pid, force=False)
+            for _ in range(15):
+                if not mcp_shell.process_alive(_server_pid):
+                    break
+                time.sleep(0.2)
+            if mcp_shell.process_alive(_server_pid):
+                mcp_shell.kill_process(_server_pid, force=True)
         except Exception:
             pass
+    _server_pid = None
+    # Free only JARVIS-launched Chrome (clone profile / this server). Never kill daily Chrome.
+    try:
+        from executor.sys_platform import kill_matching_command
+        kill_matching_command(str(ROOT / "chrome-profile-data"))
+        kill_matching_command(str(ROOT / "user-data"))
+        kill_matching_command(str(SERVER_JS))
+    except Exception:
+        pass
 
 
 def command(action: str, timeout: float = 120.0, **params: Any) -> dict:

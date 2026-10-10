@@ -1,3 +1,4 @@
+setuptools<81
 fastapi
 uvicorn
 python-dotenv
@@ -12,13 +13,13 @@ mss
 opencv-python
 Pillow
 pyscreeze
-pywinauto
-keyboard
-mouse
+pydantic-settings
+pyobjc-core
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
 langgraph
 langchain
 langchain-core
-langchain-groq
 browser-use
 playwright
 open-interpreter
@@ -30,10 +31,9 @@ agents
 langchain-ollama
 pytesseract
 pyperclip
-edge-tts
 pygame
-pycaw
-faster-whisper
 torch
-groq
+pocket-tts
+huggingface_hub
+faster-whisper
 webrtcvad

@@ -64,6 +64,31 @@ def get_current_context():
     if last_song:
         context_parts.append(f"Last played song/artist: {last_song}")
     try:
+        from memory.db import current_conversation_id, list_recent_messages, list_user_profile
+
+        profile = list_user_profile()
+        private_keys = ("password", "secret", "token", "credential", "api_key")
+        profile_items = [
+            f"{str(key)[:60]}={str(value)[:120]}"
+            for key, value in profile.items()
+            if not any(term in str(key).lower() for term in private_keys)
+        ]
+        if profile_items:
+            context_parts.append("Saved profile: " + "; ".join(profile_items)[:400])
+
+        recent = list_recent_messages(
+            6, exclude_conversation_id=current_conversation_id()
+        )
+        if recent:
+            lines = []
+            for item in recent:
+                who = "User" if item["role"] == "user" else "JARVIS"
+                content = re.sub(r"\s+", " ", item["content"])
+                lines.append(f"{who}: {content[:180]}")
+            context_parts.append("Earlier conversation: " + " | ".join(lines)[:650])
+    except Exception:
+        pass
+    try:
         from brain.memory_store import context_snippet
         snippet = context_snippet()
         if snippet:

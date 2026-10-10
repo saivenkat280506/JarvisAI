@@ -22,9 +22,10 @@ import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from memory.db import DB_PATH, init_db
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DB = os.path.join(_DIR, "..", "data", "jarvis_memory.db")
+DEFAULT_DB = str(DB_PATH)
 CONTACTS_JSON = os.path.join(_DIR, "..", "executor", "whatsapp_contacts.json")
 
 _GROUPISH = re.compile(
@@ -38,7 +39,7 @@ _conn: sqlite3.Connection | None = None
 
 
 def _db_path() -> str:
-    return os.environ.get("JARVIS_MEMORY_DB") or DEFAULT_DB
+    return DEFAULT_DB
 
 
 def _now() -> str:
@@ -94,10 +95,38 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_store() -> None:
-    """Create tables and seed WhatsApp allowlist from the contacts JSON."""
+    """Create tables and seed the local contacts and skills registries."""
+    init_db()
     with _lock:
         conn = _connect()
         _seed_whatsapp_json(conn)
+        _seed_skills_json(conn)
+
+
+def _seed_skills_json(conn: sqlite3.Connection) -> None:
+    """Mirror built-in skill metadata into SQLite so it survives sessions."""
+    skills_path = os.path.join(_DIR, "skills_registry.json")
+    try:
+        with open(skills_path, "r", encoding="utf-8") as handle:
+            skills = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[MemoryStore] Could not seed skills registry: {exc}")
+        return
+    if not isinstance(skills, list):
+        return
+    now = _now()
+    for skill in skills:
+        if not isinstance(skill, dict) or not skill.get("name"):
+            continue
+        name = str(skill["name"]).strip()
+        description = str(skill.get("description") or "").strip()
+        conn.execute(
+            "INSERT INTO skills_registry (name, path, description, enabled, updated_at) "
+            "VALUES (?, ?, ?, 1, ?) ON CONFLICT(name) DO UPDATE SET "
+            "path=excluded.path, description=excluded.description, updated_at=excluded.updated_at",
+            (name, skills_path, description, now),
+        )
+    conn.commit()
 
 
 def _seed_whatsapp_json(conn: sqlite3.Connection) -> None:

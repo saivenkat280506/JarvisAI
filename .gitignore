@@ -13,12 +13,14 @@
 # testing
 /coverage
 
-# next.js
-/.next/
-/out/
+# next.js (frontend/)
+frontend/.next/
+.next/
+out/
 
 # production
-/build/
+build/
+miscellaneous/build/
 
 # misc
 .DS_Store
@@ -36,11 +38,15 @@ backend/.env*
 backend/.env
 
 # build artifacts
-/dist/
-/dist-desktop/
+dist/
+dist-desktop/
+miscellaneous/desktop-launcher/JARVIS.app/
+miscellaneous/desktop-launcher/jarvis-desktop-window
 
 # log files
 *.log
+miscellaneous/logs/
+backend/logs/
 
 # IDE
 .vscode/
@@ -53,7 +59,7 @@ backend/executor/apps_registry.json
 jarvis_app.spec
 jarvis_icon.ico
 jarvis_icon.png
-backend/desktop/jarvis_icon.png
+backend/desktop_app/jarvis_icon.png
 
 # vercel
 .vercel
@@ -76,18 +82,21 @@ backend/data/*.db-wal
 backend/data/*.db-shm
 
 logs.txt
+# legacy root log directory (now miscellaneous/logs/)
+/logs/
+scripts/jarvis-desktop-window
 # local session / agent clutter
 terminals/
 mcps/
 whatsapp recordings/
 backend/tts/voices/*.wav
 !backend/tts/voices/jarvis_voice_clean.wav
-browser-automation/user-data/
-browser-automation/chrome-profile-data/
-browser-automation/puppeteer-server.log
-browser-automation/node_modules/
+backend/browser-automation/user-data/
+backend/browser-automation/chrome-profile-data/
+backend/browser-automation/puppeteer-server.log
+backend/browser-automation/node_modules/
 Crashpad/
 CrashpadMetrics*
 *.pma
 backend/executor/whatsapp_contacts.json
-browser-automation/src/get_chrome_password.py
+backend/browser-automation/src/get_chrome_password.py

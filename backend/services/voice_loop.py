@@ -13,8 +13,6 @@ from datetime import datetime
 from services.event_bus import event_bus, BusEvent, EventType
 from services.runtime_state import flags, SystemState
 from services.websocket_manager import manager
-from stt.wake import wait_for_wake_word
-from stt.stt import listen_stream
 
 
 _current_state = SystemState.IDLE
@@ -64,17 +62,39 @@ async def _run_wake_detector():
                 await asyncio.sleep(0.05)
                 continue
 
-            def check_trigger():
-                return flags.force_listen_trigger
+            import time
+            if flags.listen_not_before > time.monotonic():
+                await asyncio.sleep(0.15)
+                continue
 
-            detected = await asyncio.to_thread(
-                wait_for_wake_word, stop_check=check_trigger
-            )
+            try:
+                from tts.pocket_tts import is_speaking
+                if is_speaking():
+                    await asyncio.sleep(0.15)
+                    continue
+            except Exception:
+                pass
+
+            def check_trigger():
+                import time
+                return (
+                    flags.force_listen_trigger
+                    or flags.continuous_voice_mode
+                    or flags.voice_session_active
+                    or flags.listen_not_before > time.monotonic()
+                )
+
+            def detect_wake_word():
+                from stt.wake import wait_for_wake_word
+                return wait_for_wake_word(stop_check=check_trigger)
+
+            detected = await asyncio.to_thread(detect_wake_word)
 
             if is_shutting_down():
                 break
 
-            if detected:
+            import time
+            if detected and not flags.continuous_voice_mode and flags.listen_not_before <= time.monotonic():
                 _wake_signal.set()
 
             await asyncio.sleep(0.05)
@@ -99,6 +119,12 @@ async def _wait_until_ready_to_listen():
         if not flags.continuous_voice_mode or flags.stop_listen_trigger:
             return
 
+        import time
+        remaining = flags.listen_not_before - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(min(remaining, 0.25))
+            continue
+
         speaking = is_speaking()
         if speaking:
             tts_was_active = True
@@ -122,7 +148,7 @@ async def _wait_until_ready_to_listen():
 
 # ── Listen + Process Cycle ──────────────────────────────────────────────────
 
-async def _listen_and_process() -> str:
+async def _listen_and_process(command_override: str = "") -> str:
     """
     Full listen -> transcribe -> process cycle.
     Returns: "processed", "empty", "blocked", or "terminated".
@@ -133,44 +159,48 @@ async def _listen_and_process() -> str:
     with flags.state_lock:
         if flags.is_listening:
             return "blocked"
-        if not _ready_to_listen():
+        if not _ready_to_listen() and not (
+            command_override.strip() and _current_state == SystemState.TRANSCRIBING
+        ):
             print(f"[VoiceLoop] Blocked: State={_current_state.name}")
             return "blocked"
         if flags.stop_listen_trigger or not flags.continuous_voice_mode:
             return "terminated"
 
-    await manager.broadcast_json({"type": "wake_word_detected"})
-    await set_state(SystemState.LISTENING)
-    with flags.state_lock:
-        flags.is_listening = True
+    command_text = command_override.strip()
+    if not command_text:
+        await manager.broadcast_json({"type": "wake_word_detected"})
+        await set_state(SystemState.LISTENING)
+        with flags.state_lock:
+            flags.is_listening = True
 
-    await asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)
+        loop = asyncio.get_event_loop()
 
-    loop = asyncio.get_event_loop()
+        def partial_cb(partial_text: str, countdown: int = None):
+            print(f"[Live STT] {partial_text} (countdown: {countdown})")
+            asyncio.run_coroutine_threadsafe(set_state(SystemState.TRANSCRIBING), loop)
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast_json({
+                    "type": "partial_transcript",
+                    "text": partial_text,
+                    "countdown": countdown,
+                }),
+                loop,
+            )
 
-    def partial_cb(partial_text: str, countdown: int = None):
-        print(f"[Live STT] {partial_text} (countdown: {countdown})")
-        asyncio.run_coroutine_threadsafe(set_state(SystemState.TRANSCRIBING), loop)
-        asyncio.run_coroutine_threadsafe(
-            manager.broadcast_json({
-                "type": "partial_transcript",
-                "text": partial_text,
-                "countdown": countdown,
-            }),
-            loop,
-        )
+        def get_text() -> str:
+            from stt.stt import listen_stream
+            return listen_stream(partial_cb=partial_cb, stop_event=flags.stop_event)
 
-    def get_text() -> str:
-        return listen_stream(partial_cb=partial_cb, stop_event=flags.stop_event)
-
-    from executor.music_services import pause_for_listening, resume_after_listening
-    paused_music_for_stt = False
-    try:
-        paused_music_for_stt = pause_for_listening()
-        command_text = await asyncio.to_thread(get_text)
-    finally:
-        if paused_music_for_stt:
-            resume_after_listening()
+        from executor.music_services import pause_for_listening, resume_after_listening
+        paused_music_for_stt = False
+        try:
+            paused_music_for_stt = pause_for_listening()
+            command_text = await asyncio.to_thread(get_text)
+        finally:
+            if paused_music_for_stt:
+                resume_after_listening()
 
     import time
     now = time.time()

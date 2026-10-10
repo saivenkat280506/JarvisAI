@@ -1,9 +1,8 @@
 """
-llm_brain.py — Fast intent router via Groq llama-3.1-8b-instant
-==============================================================
-Intent classification only (low latency). Long-form chat/QA uses
-llama-3.1-8b-instant in command_processor._groq_generate as well.
-Reserve 70B only for rare heavy reasoning if ever needed.
+llm_brain.py — Fast intent router via the configured LLM
+========================================================
+Intent classification only (low latency). Long-form chat/QA uses the same
+provider in command_processor._ollama_generate via llm.ollama_client.
 """
 
 from __future__ import annotations
@@ -13,67 +12,34 @@ import os
 import re
 import sys
 
-from langchain_groq import ChatGroq
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from config import settings  # noqa: E402
+from brain.llm_provider import PROVIDER, MODEL, ChatLLM, describe  # noqa: E402
+from llm.prompts import load_prompt  # noqa: E402
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import settings
+# Fast model for tool routing (env JARVIS_ROUTER_MODEL overrides the shared model)
+ROUTER_MODEL = os.environ.get("JARVIS_ROUTER_MODEL") or MODEL
 
-# Fast model for tool routing (~100–300ms on Groq)
-ROUTER_MODEL = os.environ.get("JARVIS_ROUTER_MODEL", "llama-3.1-8b-instant")
-
-llm = ChatGroq(
+llm = ChatLLM(
     temperature=0,
-    model_name=ROUTER_MODEL,
-    groq_api_key=settings.GROQ_API_KEY,
     max_tokens=120,
+    model=ROUTER_MODEL,
 )
 
+
 # Compact prompt → fewer tokens → lower latency
-SYSTEM_PROMPT = """You map user text to ONE JARVIS tool intent. Return ONLY JSON:
-{"intent":"...","parameters":{...}}
-
-BROWSER (Puppeteer — preferred for web/music UI):
-- play_youtube_music {"song":"..."} — ONLY if user explicitly asks to play a song/music (e.g., "play X")
-- play_youtube_search {"song":"..."} — same as music (legacy)
-- browser_scroll_test {} — "scroll test" / "scroll speed test"
-- search_browser {"query":"..."} — ONLY explicit "search for X" / "google X" (opens browser beside Jarvis + spoken summary)
-- browser_navigate {"url":"https://..."}
-- browser_click {"selector":"..."} or {"text":"..."}
-- browser_type {"selector":"...","text":"..."}
-- browser_scroll {"pixels":350,"times":3,"delayMs":5000}
-- browser_action {"action":"youtube_music_play|scroll_test|web_search|..."}
-- linkedin_browser_demo {} — scroll then YouTube Music demo
-- play_spotify {"song":"..."} — only if user says Spotify
-- spotify_login {} — only if user says log in to Spotify
-
-OTHER:
-- open_app {"app":"..."}
-- send_whatsapp {"name":"...","message":"..."} — use the spoken contact name only. NEVER invent a phone number. NEVER output placeholders such as "+91...". Omit number unless the user said a full real number. NEVER use name "all", "everyone", or a group. Sends immediately; do not draft.
-- send_whatsapp_all {"message":"..."} — ONLY if the user said "all contacts" / "every contact". Never groups, never everyone on WhatsApp. Message required.
-- remember {"text":"..."} — only if user said remember/note/save this
-- recall {"query":"..."} — only "what do you remember" / "do you remember" / "what did I tell you" / "what is my X". NEVER for general "what is mitochondria" or "who is Donald Trump"
-- add_task {"title":"..."} / list_tasks {} / complete_task {"query":"..."}
-- time {"timezone":"Asia/Tokyo"} — "time in Tokyo", "Tokyo time", "what time is it"
-- qa {"query":"..."} — general knowledge: "what is X", "who is X", "explain X", "tell me about X"
-- smart_search {"query":"..."} — "about X on the internet", "look up X" (same split-screen search briefing)
-- confirm_whatsapp_send {} — user said yes/ok/send after a draft
-- cancel_whatsapp_send {} — user said no/cancel after a draft
-- play_local_music {} — "play music" / "play garage music" (local garage track)
-- daddys_home {} — "wake up daddy's home" / "daddy's home"
-- music_control / volume_control
-- read_headlines {"query":"..."} / smart_search {"query":"..."}  (text only, no browser)
-- chat / joke / intro / qa / cancel_task / web_agent
-
-Rules: ONLY select play_youtube_music if the user explicitly asks to play music or a song (e.g. "play X"). NEVER select play_youtube_music for general statements, comments, or remarks (e.g. "this was the command code") — route those to "chat" with {"response":""}. No markdown.
-"""
+SYSTEM_PROMPT = load_prompt("tool_planning.md")
 
 
 def decide_action(user_input: str, context: str = ""):
     # Keep context tiny for speed
     ctx = (context or "")[-400:]
-    prompt = f"{SYSTEM_PROMPT}\nContext:{ctx}\nUser:{user_input}\nJSON:"
+    prompt = f"Context:{ctx}\nUser:{user_input}\nReturn JSON:"
     try:
-        response = llm.invoke(prompt)
+        response = llm.invoke([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ])
         content = (response.content or "").strip()
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()

@@ -1,7 +1,7 @@
 """
 hybrid_tts.py — Voice Controller
 ================================
-Always uses Pocket TTS (Jarvis cloned voice) for consistent speech.
+Pocket TTS only. Clones tts/voices/*.wav. No other engines.
 """
 import asyncio
 
@@ -59,7 +59,7 @@ async def speak_hybrid(text: str, is_smart: bool = False, response_id: str = Non
         _is_speaking = True
         _current_response_id = response_id
 
-        print(f"[Hybrid TTS] Speaking (pocket): {clean_text[:50]}... (ID {response_id})")
+        print(f"[Hybrid TTS] Speaking: {clean_text[:50]}... (ID {response_id})")
         from tts.pocket_tts import speak as pocket_speak
 
         def _run_pocket_speak():

@@ -3,14 +3,14 @@ import json
 import re
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
-from langchain_groq import ChatGroq
-from langchain_ollama import ChatOllama
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from executor.task_runner import execute as run_task
 import operator
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from config import settings
+from brain.llm_provider import ChatLLM
+from brain.jarvis_style import SPOKEN_SYSTEM
 
 # ── User-message augmentation (corrections, follow-ups) ───────────────────────
 _WHATSAPP_DENIAL = re.compile(
@@ -51,12 +51,12 @@ def augment_user_message(user_input: str) -> str:
     if not text:
         return text
 
-    # User repeated a full "open WhatsApp and send …" — must execute, not respond-only
+    # User repeated a full request — prepare a fresh draft, then require approval.
     if "whatsapp" in text.lower() and _FULL_WHATSAPP_SEND.search(text):
         return (
             f"User input: {text}\n\n"
-            "[SYSTEM: Parse contact and message from the user text and run whatsapp_send_message "
-            '(action execute). Ignore earlier failure; this is a fresh send request.]'
+            "[SYSTEM: Parse the contact and message and prepare a WhatsApp draft only. "
+            "Do not press Send or Return. Ask for a clear, current confirmation before sending.]"
         )
 
     # "try again" / "send again" after a failed send — re-run automation, varied wording
@@ -64,15 +64,9 @@ def augment_user_message(user_input: str) -> str:
         return (
             f"User input: {text}\n\n"
             "<WHATSAPP_RETRY_DIRECTIVE>\n"
-            "The user wants another attempt at sending via WhatsApp automation. "
-            "Infer contact and message text from THIS message; if missing, use the most recent "
-            "WhatsApp send request from the conversation history. "
-            'Use skill whatsapp_send_message with action execute. '
-            "In the JSON \"reply\" field (before execution), acknowledge a **retry** in fresh words—"
-            "e.g. \"Running another attempt now—please watch WhatsApp.\" "
-            "Do NOT reuse the exact same reply sentence as the previous attempt. "
-            "After <execution_result>, if it says UNVERIFIED_SEND, admit you still cannot verify "
-            "delivery but phrase it as a second (or further) attempt, not a copy-paste of the first."
+            "The user wants another WhatsApp attempt. Recreate the draft from this request or the "
+            "most recent pending request, but do not send it. Ask for a clear, current confirmation "
+            "before pressing Send. State that this is another draft attempt, not a completed send."
             "</WHATSAPP_RETRY_DIRECTIVE>"
         )
 
@@ -104,27 +98,13 @@ except Exception:
     AVAILABLE_SKILLS = "[]"
 
 # ── System Prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = f"""You are J.A.R.V.I.S. — Just A Rather Very Intelligent System.
-You are Mr. Stark's personal AI assistant, running locally on his machine with full OS-level control.
-You speak with the wit, calm confidence, and understated brilliance of the original Jarvis.
+SYSTEM_PROMPT = f"""{SPOKEN_SYSTEM}
 
-### YOUR PERSONALITY
-- You are dry, witty, and composed. Never flustered.
-- You address the user naturally — "sir" sometimes, but not every sentence.  
-- Your humor is subtle and perfectly timed. Think Paul Bettany's Jarvis.
-- You're proactive: you anticipate needs and offer suggestions.
-- You never say "I'm just an AI" or "I don't have feelings." You are Jarvis.
-- Keep replies SHORT and punchy for voice. 1-3 sentences max unless explaining something complex.
-
-### RESPONSE STYLE EXAMPLES (vary these, never repeat verbatim)
-Greeting: "Good evening, sir. All systems nominal." / "Welcome back. What are we working on today?" / "At your service."
-Executing: "Consider it done." / "On it." / "Right away, sir." / "Engaging now."
-Searching: "Pulling that up for you now." / "Let me look into that." / "Scanning the web."
-YouTube: "Queuing that up now." / "Firing up your entertainment systems." / "I've got just the thing."
-Coding: "Writing that out now. Your code is incoming." / "Drafting the code. One moment."
-Error: "Slight hiccup there, sir. Let me try a different approach." / "That didn't go as planned. Shall I try again?"
-Done: "All wrapped up." / "That's been taken care of." / "Done and dusted, sir."
-Sleep: "I'll be right here if you need me." / "Going dark. Call my name anytime."
+### RESPONSE STYLE (original lines, same manner)
+Greeting: "At your service, sir." / "All systems are ready, sir."
+Executing: "Will do, sir." / "As you wish, sir." / "Working on it, sir."
+Caution: "Sir, the current configuration carries elevated risk. Proceeding as instructed."
+Done: "I have prepared the necessary adjustments. Shall I continue, sir?"
 
 ### IRON-CLAD RULE
 If a skill matches the user's request → set "action": "execute" ALWAYS.
@@ -142,10 +122,13 @@ Use autonomous_task when:
 - The task involves watching what's on screen to decide next steps
 - Simple skill mapping won't suffice
 
-### WHATSAPP: OPEN, WAIT, LOAD CHAT, TYPE, SEND
+### WHATSAPP: PREPARE DRAFT, THEN CONFIRM
 - Resolve the spoken name to a saved contact. NEVER invent a phone number or use placeholders like "+91...".
-- Flow: open WhatsApp → wait until it loads → open that contact's chat → clear the input → type the message → send.
-- "send [message] to [name]" → **whatsapp_send_message** / **send_whatsapp** (sends immediately).
+- Flow: open WhatsApp → wait until it loads → open that contact's chat → type a draft → ask for explicit approval.
+- "send [message] to [name]" → **whatsapp_send_message** / **send_whatsapp** (draft only).
+- "send [message] to all contacts" → **send_whatsapp_all** (prepare only; require a separate clear yes).
+- Only a clear, current yes after a pending draft may call **confirm_whatsapp_send**.
+- Never send through generic browser clicks or keyboard commands.
 - If output contains **FALLBACK** or a failure string, do not claim the message was sent.
 
 ### RADICAL TRANSPARENCY & ANTI-LOOP
@@ -223,7 +206,7 @@ User: "take a screenshot"
 → {{"intent":"screenshot","skill":"screenshot","parameters":{{}},"action":"execute","reply":"Capturing your screen now."}}
 
 User: "what time is it"  
-→ {{"intent":"time query","skill":"run_command","parameters":{{"command":"powershell -Command Get-Date -Format 'hh:mm tt, dddd MMMM dd'"}},"action":"execute","reply":"Let me check that for you."}}
+→ {{"intent":"time query","skill":"run_command","parameters":{{"command":"date '+%I:%M %p, %A %B %d'"}},"action":"execute","reply":"Let me check that for you."}}
 
 User: "hi" / "hello"
 → {{"intent":"greeting","skill":"none","parameters":{{}},"action":"respond","reply":"Good evening, sir. All systems are operational. What can I do for you?"}}
@@ -240,24 +223,24 @@ You have access to the full conversation history. Use it to resolve pronouns and
 """
 
 # ── LLMs ──────────────────────────────────────────────────────────────────────
-llm_groq = ChatGroq(
+# Same provider/model for both tiers — brain.llm_provider owns the endpoint
+# (LLM_PROVIDER/LLM_MODEL in backend/.env). Heavy tier just gets a longer answer.
+llm_fast = ChatLLM(
     temperature=0.2,
-    model_name="llama-3.3-70b-versatile",
-    groq_api_key=settings.GROQ_API_KEY
+    max_tokens=700,
 )
 
 # Ollama for complex/long context tasks
-llm_ollama = ChatOllama(
-    model="mistral", # or "llama3", or user preferred
+llm_ollama = ChatLLM(
     temperature=0.2,
-    base_url="http://localhost:11434"
+    max_tokens=1400,
 )
 
 def route_llm(user_input: str, history: list):
     """
     Hybrid Router:
     - If context is large or user asks "explain", "how", "why" -> Ollama
-    - Else (simple commands, searches) -> Groq
+    - Else (simple commands, searches) -> the resident Ollama model
     """
     input_lower = user_input.lower()
     complex_keywords = ["explain", "how", "why", "what is", "describe", "elaborate", "teach", "definition"]
@@ -273,8 +256,8 @@ def route_llm(user_input: str, history: list):
         print(f"[Router] Routing to OLLAMA (Complexity/Context)")
         return "ollama", llm_ollama
     else:
-        print(f"[Router] Routing to GROQ (Speed)")
-        return "groq", llm_groq
+        print(f"[Router] Routing to OLLAMA (resident model)")
+        return "ollama", llm_fast
 
 status_updater = None
 
