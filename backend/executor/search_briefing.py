@@ -5,13 +5,11 @@ Opens results in Chrome and returns snippets for a spoken/app summary.
 
 from __future__ import annotations
 
-import json
 import re
-import urllib.error
-import urllib.request
 from typing import Any
+from urllib.parse import quote, urlsplit
 
-from executor.puppeteer_client import command
+from mcp_clients import browser as mcp_browser
 
 _OLD_FOUND_PREFIX = re.compile(
     r"^(?:here(?:'s| is) what i found(?: about .+?)?[:.]\s*"
@@ -97,34 +95,69 @@ def format_found_about(query: str, body: str) -> str:
         line += " The rest is on the screen."
     return line
 
-ELECTRON_LAYOUT = "http://127.0.0.1:3930/layout"
 
+def _safe_markdown_text(value: str) -> str:
+    return re.sub(r"([\\`*_{}\[\]<>])", r"\\\1", str(value or "").strip())
+
+
+def _markdown_link(title: str, url: str) -> str:
+    parsed = urlsplit(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return _safe_markdown_text(title)
+    safe_url = quote(url, safe=":/?#@!$&'*,;=%")
+    return f"[{_safe_markdown_text(title)}]({safe_url})"
+
+
+def format_chat_briefing(
+    query: str,
+    summary: str,
+    sources: list[dict],
+    *,
+    heading: str = "Web search briefing",
+    item_heading: str = "Sources",
+) -> str:
+    """Render concise takeaways and linked citations for the chat thread."""
+    clean_summary = short_spoken_body(summary, max_sentences=3, max_words=72)
+    takeaways = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", clean_summary)
+        if sentence.strip()
+    ][:3]
+
+    if not takeaways:
+        for source in sources[:3]:
+            snippet = short_spoken_body(str(source.get("snippet") or ""), 1, 28)
+            if snippet:
+                takeaways.append(snippet)
+    if not takeaways:
+        takeaways = ["I found related pages, but they did not include enough detail to summarize."]
+
+    lines = [
+        f"## {heading}",
+        f"**Query:** {_safe_markdown_text(clean_search_query(query) or query)}",
+        "",
+        "### Key takeaways",
+        *[f"- {_safe_markdown_text(item)}" for item in takeaways],
+    ]
+
+    links = []
+    for source in sources:
+        title = str(source.get("title") or "").strip()
+        url = str(source.get("url") or "").strip()
+        if not title or not url:
+            continue
+        host = urlsplit(url).netloc.removeprefix("www.")
+        links.append(f"- {_markdown_link(title, url)} — {_safe_markdown_text(host)}")
+        if len(links) == 5:
+            break
+    if links:
+        lines.extend(["", f"### {item_heading}", *links])
+    return "\n".join(lines)
 
 def get_work_area() -> dict[str, int]:
-    """Primary monitor work area (excludes taskbar)."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class RECT(ctypes.Structure):
-            _fields_ = [
-                ("left", wintypes.LONG),
-                ("top", wintypes.LONG),
-                ("right", wintypes.LONG),
-                ("bottom", wintypes.LONG),
-            ]
-
-        rect = RECT()
-        if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0):
-            return {
-                "x": int(rect.left),
-                "y": int(rect.top),
-                "width": int(rect.right - rect.left),
-                "height": int(rect.bottom - rect.top),
-            }
-    except Exception as exc:
-        print(f"[SearchBrief] work area fallback: {exc}")
-    return {"x": 0, "y": 0, "width": 1920, "height": 1080}
+    """Primary monitor work area (excludes the menu bar)."""
+    from executor.sys_platform import get_work_area as _platform_work_area
+    return _platform_work_area()
 
 
 def split_geometry(area: dict[str, int] | None = None) -> dict[str, Any]:
@@ -148,73 +181,22 @@ def split_geometry(area: dict[str, int] | None = None) -> dict[str, Any]:
     }
 
 
-def _http_json(url: str, payload: dict | None = None, timeout: float = 2.0) -> dict:
-    data = None
-    headers = {"Content-Type": "application/json"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _snap_jarvis_win32(bounds: dict) -> bool:
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        hits: list[int] = []
-
-        def callback(hwnd, _lparam):
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length < 3:
-                return True
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            title = (buf.value or "").upper()
-            if "J.A.R.V.I.S" in title or "JARVIS WORKSPACE" in title:
-                hits.append(int(hwnd))
-            return True
-
-        user32.EnumWindows(WNDENUMPROC(callback), 0)
-        if not hits:
-            return False
-        hwnd = hits[0]
-        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        user32.SetWindowPos(
-            hwnd,
-            0,
-            int(bounds["x"]),
-            int(bounds["y"]),
-            int(bounds["width"]),
-            int(bounds["height"]),
-            0x0040,  # SWP_SHOWWINDOW
-        )
-        return True
-    except Exception as exc:
-        print(f"[SearchBrief] Win32 snap failed: {exc}")
-        return False
+def _snap_jarvis_macos(bounds: dict) -> bool:
+    from executor.sys_platform import set_app_window_bounds
+    return set_app_window_bounds(
+        "J.A.R.V.I.S.",
+        int(bounds["x"]),
+        int(bounds["y"]),
+        int(bounds["width"]),
+        int(bounds["height"]),
+    )
 
 
 def snap_split_layout() -> dict[str, Any]:
     """Put Jarvis on the left half. Returns geometry including browser bounds."""
     geo = split_geometry()
-    try:
-        remote = _http_json(ELECTRON_LAYOUT, {"mode": "split-left"}, timeout=2.0)
-        if remote.get("ok") and remote.get("browser"):
-            print("[SearchBrief] Electron snapped left")
-            return remote
-        if remote.get("ok") and remote.get("workArea"):
-            geo = split_geometry(remote["workArea"])
-    except Exception as exc:
-        print(f"[SearchBrief] Electron layout server: {exc}")
-
-    if _snap_jarvis_win32(geo["jarvis"]):
-        print("[SearchBrief] Jarvis snapped via Win32")
+    if _snap_jarvis_macos(geo["jarvis"]):
+        print("[SearchBrief] J.A.R.V.I.S. snapped via AppleScript MCP")
     return {"ok": True, **geo}
 
 
@@ -230,11 +212,8 @@ def run_search_briefing(query: str) -> dict[str, Any]:
     layout = snap_split_layout()
     bounds = layout.get("browser") or split_geometry()["browser"]
 
-    result = command(
-        "web_search",
-        timeout=70.0,
-        query=q,
-        bounds=bounds,
+    result = mcp_browser.command(
+        "web_search", {"query": q, "bounds": bounds}, timeout=70.0
     )
     if not result or result.get("ok") is False:
         return {
@@ -257,6 +236,17 @@ def run_search_briefing(query: str) -> dict[str, Any]:
         snippet = str(item.get("snippet") or "").strip()
         if title and url:
             clean.append({"title": title, "url": url, "snippet": snippet})
+
+    if not clean and not str(result.get("featured") or "").strip():
+        return {
+            "ok": False,
+            "query": q,
+            "url": result.get("url") or "",
+            "results": [],
+            "featured": "",
+            "error": "The search page opened but no results could be read from it.",
+            "layout": layout,
+        }
 
     return {
         "ok": True,

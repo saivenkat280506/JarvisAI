@@ -7,43 +7,38 @@ app management, web search, WhatsApp, file ops, and more.
 """
 
 import os
+import shlex
 import shutil
-import subprocess
 import time
 import threading
-import webbrowser
 import urllib.parse
 import urllib.request
-import winreg
 import xml.etree.ElementTree as ET
 import socket
 import re
 import json
 import asyncio
-from executor.open_app import get_app_path
+from executor.open_app import get_app_path, open_app, close_app
+from executor.sys_platform import (
+    IS_MAC,
+    MOD_KEY,
+    current_user,
+    desktop_dir,
+    focus_application,
+    notify,
+    system_power,
+)
+from mcp_clients import macos as mcp_gui
+from mcp_clients import shell as mcp_shell
 
 # --- 3rd Party Dependencies ---
-try:
-    import pyautogui
-    from PIL import Image
-    pyautogui.FAILSAFE = False
-except ImportError:
-    pyautogui = None
-
 try:
     import pytesseract
 except ImportError:
     pytesseract = None
 
-try:
-    import keyboard
-except ImportError:
-    keyboard = None
-
-try:
-    from pywinauto import Application
-except ImportError:
-    Application = None
+keyboard = None
+Application = None
 
 # --- Configuration & Flags ---
 OLLAMA_ENABLED = False
@@ -57,10 +52,10 @@ def is_ollama_running() -> bool:
 
 # Initial Check
 if is_ollama_running():
-    print("[JARVIS] Ollama detected on port 11434. Local fallback enabled.")
+    print("[JARVIS] Ollama detected on port 11434. Local brain ready.")
     OLLAMA_ENABLED = True
 else:
-    print("[JARVIS] Ollama not detected. Using cloud-only (Groq) brain.")
+    print("[JARVIS] Ollama not detected — start it with `ollama serve` (local-only router, no cloud fallback).")
 
 # Track context
 _last_search_query: str = ""
@@ -69,20 +64,53 @@ _last_search_query: str = ""
 # 1. VISION VERIFICATION (Self-Correction Logic)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _vision_text_visible(target_text: str, image) -> bool:
+    """Ask the local vision model whether target_text is visible in image."""
+    import base64 as _b64
+    import io as _io
+    from langchain_core.messages import HumanMessage
+    from brain.llm_provider import ChatLLM, VISION_MODEL
+
+    buf = _io.BytesIO()
+    image.save(buf, format="PNG")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    llm = ChatLLM(temperature=0.0, max_tokens=16, model=VISION_MODEL)
+    resp = llm.invoke([HumanMessage(content=[
+        {"type": "text", "text":
+            f'Reply with exactly YES if the text "{target_text}" is visible '
+            "in this screenshot, otherwise reply with exactly NO."},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+    ])])
+    return "YES" in (resp.content or "").upper()
+
+
 def verify_via_screenshot(target_text: str) -> bool:
     """
     Second-order fallback verification. If UI Tree scanning misses the bubble,
-    we take a raw screenshot of the chat area and use OCR to find the text.
+    we take a raw screenshot of the chat area and use OCR to find the text;
+    when OCR (tesseract) is unavailable we ask the local vision model instead.
     """
-    if not pyautogui or not pytesseract:
-        return False
-    
     try:
-        screenshot = pyautogui.screenshot(region=(400, 200, 1500, 800))
-        ocr_text = pytesseract.image_to_string(screenshot)
-        clean_target = target_text.lower().strip()
-        clean_ocr = ocr_text.lower().strip()
-        return clean_target in clean_ocr
+        import base64 as _b64
+        import io as _io
+        from PIL import Image
+        payload = mcp_gui.gui_screenshot_region(400, 200, 1500, 800)
+        screenshot = Image.open(_io.BytesIO(_b64.b64decode(payload)))
+    except Exception as e:
+        print(f"[Vision] Screenshot capture failed: {e}")
+        return False
+
+    if pytesseract:
+        try:
+            ocr_text = pytesseract.image_to_string(screenshot)
+            clean_target = target_text.lower().strip()
+            clean_ocr = ocr_text.lower().strip()
+            return clean_target in clean_ocr
+        except Exception as e:
+            print(f"[Vision] OCR unavailable ({e}); asking the vision model.")
+
+    try:
+        return _vision_text_visible(target_text, screenshot)
     except Exception as e:
         print(f"[Vision] Verification Error: {e}")
         return False
@@ -92,22 +120,47 @@ def verify_via_screenshot(target_text: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def type_text(text: str) -> str:
-    if not keyboard: return "ERROR: keyboard module is unavailable."
-    if not text: return "No text provided to type."
+    if not text:
+        return "No text provided to type."
     time.sleep(0.5)
-    keyboard.write(text, delay=0.02)
-    return f"SUCCESS: Typed '{text}'"
+    try:
+        mcp_gui.set_clipboard(text)
+        mcp_gui.gui_hotkey([MOD_KEY, "v"])
+        return f"SUCCESS: Typed '{text}'"
+    except Exception:
+        try:
+            mcp_gui.gui_type(text, interval=0.02)
+            return f"SUCCESS: Typed '{text}'"
+        except Exception as e:
+            return f"ERROR: Failed to type text: {e}"
 
 def press_key(key: str) -> str:
     """Press a keyboard key or hotkey combo."""
-    if not keyboard: return "ERROR: keyboard module is unavailable."
+    raw = (key or "").strip()
+    if not raw:
+        return "ERROR: No key provided."
     try:
-        if "+" in key:
-            # It's a hotkey combo like "ctrl+c"
-            keyboard.send(key)
-        else:
-            keyboard.send(key)
-        return f"SUCCESS: Pressed '{key}'"
+        parts = [p.strip().lower() for p in raw.split("+") if p.strip()]
+        mapped = []
+        for part in parts:
+            if IS_MAC and part in ("ctrl", "control"):
+                part = "command"
+            if IS_MAC and part == "alt":
+                part = "option"
+            if IS_MAC and part == "win":
+                part = "command"
+            mapped.append(part)
+        try:
+            if len(mapped) == 1:
+                mcp_gui.gui_press(mapped[0])
+            else:
+                mcp_gui.gui_hotkey(mapped)
+            return f"SUCCESS: Pressed '{'+'.join(mapped)}'"
+        except Exception:
+            if keyboard:
+                keyboard.send("+".join(mapped))
+                return f"SUCCESS: Pressed '{'+'.join(mapped)}'"
+            raise
     except Exception as e:
         return f"ERROR: Failed to press key: {e}"
 
@@ -117,34 +170,14 @@ async def search_web(query: str, resolved_browser_path: str = "") -> str:
     return result
 
 def play_youtube(query: str) -> str:
-    """Search and play a YouTube video directly."""
+    """Play a YouTube result via Puppeteer + Google Chrome."""
     if not query:
-        webbrowser.open("https://www.youtube.com")
-        return "SUCCESS: Opened YouTube homepage"
-    
-    search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-    webbrowser.open(search_url)
-    
-    # Give browser time to open, then use OS agent to click first result
-    time.sleep(3)
-    
-    # Try to auto-click the first video result
-    try:
-        if pyautogui:
-            # After YouTube search loads, the first video is typically in the center-upper area
-            # We'll use the OS agent for the clicking part
-            from executor.os_agent import run_os_agent
-            result = run_os_agent(
-                f"YouTube search results are showing for '{query}'. Click on the FIRST video thumbnail to play it. The video thumbnails are the large rectangular images on the left side of each result.",
-                max_steps=3,
-                use_vision=True
-            )
-            if "SUCCESS" in result:
-                return f"SUCCESS: Playing '{query}' on YouTube"
-    except Exception as e:
-        print(f"[YouTube] Auto-play failed: {e}")
-    
-    return f"SUCCESS: Searched YouTube for '{query}'. Results are showing."
+        from executor.browser_puppeteer import browser_navigate
+        ok, msg = browser_navigate({"url": "https://www.youtube.com"})
+        return f"SUCCESS: {msg}" if ok else f"ERROR: {msg}"
+    from executor.browser_puppeteer import youtube_play_puppeteer
+    ok, msg = youtube_play_puppeteer(query, service="youtube")
+    return f"SUCCESS: {msg}" if ok else f"ERROR: {msg}"
 
 def read_news_headlines(query: str) -> str:
     try:
@@ -169,13 +202,9 @@ def read_news_headlines(query: str) -> str:
 async def send_whatsapp(contact: str, message: str, number: str = "") -> str:
     if not contact and not number:
         return "ERROR: No contact or phone number specified."
-    from executor.automation import prepare_whatsapp_message
-    from brain.memory import save_memory
+    from executor.automation import send_whatsapp_message
     import asyncio
-    success, msg = await asyncio.to_thread(prepare_whatsapp_message, contact, message, number)
-    if success:
-        save_memory("last_contact", contact or number)
-        save_memory("pending_whatsapp", None)
+    success, msg = await asyncio.to_thread(send_whatsapp_message, contact, message, number)
     return msg
 
 def write_code(code: str, filename: str = "", language: str = "python") -> str:
@@ -197,19 +226,22 @@ def write_code(code: str, filename: str = "", language: str = "python") -> str:
     elif not os.path.splitext(filename)[1]:
         filename += ext
     
-    desktop = os.path.join(os.environ["USERPROFILE"], "Desktop")
+    desktop = desktop_dir()
     filepath = os.path.join(desktop, filename)
     
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(code)
-        
-        # Try to open in VS Code
+        mcp_shell.write_file(filepath, code)
+        # Try to open in VS Code (MCP shell)
         try:
-            subprocess.Popen(f'code "{filepath}"', shell=True)
-        except:
-            # Fallback: open in notepad
-            subprocess.Popen(f'notepad "{filepath}"', shell=True)
+            result = mcp_shell.run_command(f"code {shlex.quote(filepath)}", timeout=15)
+            if result.get("returncode") != 0:
+                raise RuntimeError(result.get("stderr") or "code failed")
+        except Exception:
+            if IS_MAC:
+                from executor.sys_platform import run_open
+                run_open("-a", "TextEdit", filepath)
+            else:
+                mcp_shell.run_command(f"notepad {shlex.quote(filepath)}", timeout=15)
         
         return f"SUCCESS: Code written to '{filename}' on Desktop and opened in editor."
     except Exception as e:
@@ -218,13 +250,11 @@ def write_code(code: str, filename: str = "", language: str = "python") -> str:
 def run_terminal_command(command: str) -> str:
     """Execute a terminal/PowerShell command and return output."""
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
-        )
-        output = result.stdout.strip() or result.stderr.strip() or "Command completed successfully"
+        result = mcp_shell.run_command(command, timeout=30)
+        if result.get("timed_out"):
+            return "ERROR: Command timed out after 30 seconds"
+        output = (result.get("stdout") or "").strip() or (result.get("stderr") or "").strip() or "Command completed successfully"
         return f"SUCCESS: {output[:1000]}"
-    except subprocess.TimeoutExpired:
-        return "ERROR: Command timed out after 30 seconds"
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -236,7 +266,7 @@ def get_system_info() -> str:
             "os": platform.platform(),
             "processor": platform.processor(),
             "machine": platform.machine(),
-            "user": os.environ.get("USERNAME", "Unknown"),
+            "user": current_user(),
             "hostname": platform.node(),
         }
         return f"SUCCESS: {json.dumps(info)}"
@@ -247,13 +277,11 @@ def take_screenshot() -> str:
     """Take a screenshot and save to desktop."""
     try:
         from vision.capture import capture_screen_base64
-        import base64
         b64 = capture_screen_base64(draw_boxes=False)
-        # Save to desktop
-        screenshot_path = os.path.join(os.environ["USERPROFILE"], "Desktop", "jarvis_screenshot.png")
-        img_data = base64.b64decode(b64)
-        with open(screenshot_path, 'wb') as f:
-            f.write(img_data)
+        screenshot_path = os.path.join(desktop_dir(), "jarvis_screenshot.png")
+        result = mcp_shell.write_binary_file(screenshot_path, b64)
+        if not result.get("path"):
+            raise RuntimeError("The shell MCP server could not save the screenshot.")
         return f"SUCCESS: Screenshot saved to Desktop as 'jarvis_screenshot.png'"
     except Exception as e:
         return f"ERROR: {e}"
@@ -261,30 +289,24 @@ def take_screenshot() -> str:
 def focus_window(app_name: str) -> str:
     """Bring an application window to the foreground."""
     try:
-        if not Application:
-            return "ERROR: pywinauto not available"
-        app = Application(backend="uia").connect(title_re=f".*{app_name}.*", timeout=5)
-        win = app.top_window()
-        win.set_focus()
-        return f"SUCCESS: Focused window for '{app_name}'"
+        ok, msg = focus_application(app_name)
+        return f"SUCCESS: {msg}" if ok else f"ERROR: {msg}"
     except Exception as e:
         return f"ERROR: Could not focus '{app_name}': {e}"
 
 def click_ui_element(app_name: str, element_name: str) -> str:
-    """Click a UI element inside a windows app by name."""
+    """Click a UI element inside an app by name."""
     try:
-        if not Application:
-            return "ERROR: pywinauto not available"
-        app = Application(backend="uia").connect(title_re=f".*{app_name}.*", timeout=5)
-        win = app.top_window()
-        win.set_focus()
-        time.sleep(0.5)
-        
-        element = win.child_window(title=element_name, found_index=0)
-        if element.exists():
-            element.click_input()
-            return f"SUCCESS: Clicked '{element_name}' in '{app_name}'"
-        return f"ERROR: Element '{element_name}' not found in '{app_name}'"
+        ok, msg = focus_application(app_name)
+        if not ok:
+            return f"ERROR: {msg}"
+        time.sleep(0.4)
+        from executor.os_agent import run_os_agent
+        return run_os_agent(
+            f"In {app_name}, click the UI element named '{element_name}'.",
+            max_steps=4,
+            use_vision=False,
+        )
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -293,15 +315,9 @@ def set_reminder(minutes: int, message: str) -> str:
     def _reminder_thread():
         time.sleep(minutes * 60)
         try:
-            # Show a Windows toast notification
             from tts.pocket_tts import speak
             speak(f"Reminder: {message}")
-            # Also show a system notification
-            subprocess.run(
-                f'powershell -Command "Add-Type -AssemblyName System.Windows.Forms; '
-                f'[System.Windows.Forms.MessageBox]::Show(\'{message}\', \'JARVIS Reminder\')"',
-                shell=True
-            )
+            notify("JARVIS Reminder", message)
         except Exception as e:
             print(f"[Reminder] Error: {e}")
     
@@ -318,10 +334,10 @@ async def run_autonomous_web_task(task_description: str) -> str:
     Deep-vision web agent using browser-use.
     """
     try:
-        from langchain_groq import ChatGroq
+        from brain.llm_provider import ChatLLM
         from browser_use import Agent
         
-        llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.1)
+        llm = ChatLLM(temperature=0.1)
         agent = Agent(task=task_description, llm=llm)
         
         history = await agent.run()
@@ -380,26 +396,24 @@ def _resolve_app_path(app_name: str) -> str:
 # 5. MAIN EXECUTOR ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def execute(groq_output: dict) -> str:
-    action_type = groq_output.get("action", "")
+async def execute(action_plan: dict) -> str:
+    action_type = action_plan.get("action", "")
     if action_type in ["respond", "ask"]: return ""
-    skill = groq_output.get("skill", "")
-    params = groq_output.get("parameters", {})
+    skill = action_plan.get("skill", "")
+    params = action_plan.get("parameters", {})
     if not skill or skill == "none": return "No action."
 
     try:
         # ── App Control ──
         if skill == "open_app":
-            app = (params.get("app_name") or params.get("app") or "").lower().strip()
-            path = _resolve_app_path(app)
-            if path.endswith(":"): subprocess.Popen(f"start {path}", shell=True)
-            else: subprocess.Popen(f'start "" "{path}"', shell=True)
-            return f"Opened {app}."
+            app = (params.get("app_name") or params.get("app") or "").strip()
+            ok, msg = open_app(app)
+            return msg if ok else f"ERROR: {msg}"
 
         elif skill == "close_app":
-            app = (params.get("app_name") or params.get("app") or "").lower().strip()
-            os.system(f"taskkill /f /im {app}.exe")
-            return f"Closed {app}."
+            app = (params.get("app_name") or params.get("app") or "").strip()
+            ok, msg = close_app(app)
+            return msg if ok else f"ERROR: {msg}"
 
         elif skill == "focus_window":
             app = (params.get("app_name") or params.get("app") or "").strip()
@@ -470,12 +484,9 @@ async def execute(groq_output: dict) -> str:
 
         # ── System ──
         elif skill == "volume_control":
-            if not keyboard: return "Keyboard unavailable."
-            act = params.get("action", "up")
-            if act in ("mute", "unmute"): keyboard.send("volume mute")
-            elif act == "down": [keyboard.send("volume down") for _ in range(3)]
-            else: [keyboard.send("volume up") for _ in range(3)]
-            return "Volume updated."
+            from executor.volume_control import volume_control
+            ok, msg = volume_control(params or {"action": "up"})
+            return msg if ok else f"ERROR: {msg}"
 
         elif skill == "system_info":
             return get_system_info()
@@ -484,16 +495,8 @@ async def execute(groq_output: dict) -> str:
             return take_screenshot()
 
         elif skill == "shutdown":
-            mode = params.get("mode", "shutdown")
-            if mode == "restart":
-                os.system("shutdown /r /t 5")
-                return "SUCCESS: Restarting in 5 seconds."
-            elif mode == "sleep":
-                os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-                return "SUCCESS: Going to sleep."
-            else:
-                os.system("shutdown /s /t 5")
-                return "SUCCESS: Shutting down in 5 seconds."
+            ok, msg = system_power(params.get("mode", "shutdown"))
+            return msg if ok else f"ERROR: {msg}"
 
         # ── Typing & Input ──
         elif skill == "type_text":
@@ -517,17 +520,16 @@ async def execute(groq_output: dict) -> str:
         # ── File System ──
         elif skill == "create_folder":
             name = params.get("folder_name") or params.get("name") or "New Folder"
-            path = params.get("path") or os.path.join(os.environ["USERPROFILE"], "Desktop")
-            os.makedirs(os.path.join(path, name), exist_ok=True)
+            path = params.get("path") or desktop_dir()
+            mcp_shell.make_dirs(os.path.join(path, name))
             return f"SUCCESS: Created folder '{name}'."
 
         elif skill == "create_file":
             name = params.get("file_name") or params.get("name") or "new_file.txt"
-            path = params.get("path") or os.path.join(os.environ["USERPROFILE"], "Desktop")
+            path = params.get("path") or desktop_dir()
             content = params.get("content", "")
             filepath = os.path.join(path, name)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(content)
+            mcp_shell.write_file(filepath, content)
             return f"SUCCESS: Created file '{name}'."
 
         # ── Reminders ──

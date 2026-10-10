@@ -1,9 +1,7 @@
 """
-stt.py — Low-Latency Speech-to-Text Module
-==========================================
-CPU-based | Free | Offline | Unlimited Usage
-Model: faster-whisper (CTranslate2 int8 quantized)
-VAD:   Silero VAD (detects speech end instantly)
+stt_continuous.py — Continuous Speech-to-Text
+=============================================
+Local faster-whisper (English-only) with Silero VAD.
 
 Quick Integration:
     from stt import STT
@@ -17,7 +15,6 @@ import time
 import sys
 import numpy as np
 import sounddevice as sd
-from faster_whisper import WhisperModel
 from typing import Callable, Optional
 
 
@@ -25,10 +22,10 @@ from typing import Callable, Optional
 
 DEFAULT_CONFIG = {
     # Model: "tiny" ~fastest | "base" ~best CPU balance | "small" ~higher accuracy
-    "model_size":        "tiny.en",
+    "model_size":        "base.en",
     "device":            "cpu",
     "compute_type":      "int8",        # quantized → fast on CPU
-    "language":          None,          # None = auto-detect, or "en", "hi", etc.
+    "language":          "en",          # English-only transcription.
 
     # Audio
     "sample_rate":       16000,
@@ -93,13 +90,8 @@ class STT:
         self._silence_chunks: int   = 0
         self._last_partial_time: float = 0.0
 
-        print("[STT] Loading model…", end=" ", flush=True)
-        self.model = WhisperModel(
-            self.cfg["model_size"],
-            device=self.cfg["device"],
-            compute_type=self.cfg["compute_type"],
-        )
-        print("ready OK")
+        print("[STT] Continuous listener using local faster-whisper (base.en)")
+        self.model = None
         self._vad_model, self._vad_utils = self._load_vad()
         print("[STT] VAD ready OK")
 
@@ -148,25 +140,23 @@ class STT:
         print("\n[STT] Stopped.")
 
     def transcribe_file(self, path: str) -> str:
-        """Transcribe an audio file and return text."""
-        segments, _ = self.model.transcribe(
-            path,
-            language=self.cfg["language"],
-            beam_size=self.cfg["beam_size"],
-            condition_on_previous_text=self.cfg["condition_on_prev"],
-            word_timestamps=self.cfg["word_timestamps"],
-        )
-        return " ".join(s.text.strip() for s in segments)
+        """Transcribe an audio file locally in English."""
+        import wave
+        with wave.open(path, "rb") as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            width = wav_file.getsampwidth()
+        if width == 2:
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        else:
+            audio = np.frombuffer(frames, dtype=np.float32)
+        return self.transcribe_array(audio)
 
     def transcribe_array(self, audio: np.ndarray) -> str:
-        """Transcribe a numpy float32 array (16kHz mono)."""
-        segments, _ = self.model.transcribe(
-            audio,
-            language=self.cfg["language"],
-            beam_size=self.cfg["beam_size"],
-            condition_on_previous_text=self.cfg["condition_on_prev"],
-        )
-        return " ".join(s.text.strip() for s in segments)
+        """Transcribe a numpy float32 array (16kHz mono) locally in English."""
+        from stt.stt import transcribe_audio
+
+        pcm = np.clip(np.asarray(audio).reshape(-1) * 32767.0, -32768, 32767).astype(np.int16)
+        return transcribe_audio(pcm.tobytes())
 
     # ── Internal ────────────────────────────────────────────────────────────────
 

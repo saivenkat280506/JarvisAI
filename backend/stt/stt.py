@@ -1,8 +1,7 @@
 """
 stt.py — 3-Layer VAD & Worker STT Pipeline for JARVIS
 ======================================================
-Groq Whisper (whisper-large-v3) as primary engine.
-Local Faster-Whisper (base.en) fallback when Groq is unavailable.
+Local faster-whisper (English-only), with no audio upload path.
 
 Layers:
 1. sounddevice InputStream: Captures 30ms frames (16 kHz, mono, int16).
@@ -16,12 +15,12 @@ import webrtcvad
 import queue
 import time
 import math
-import struct
+import re
 import threading
 import io
 import wave
+import os
 
-from config import settings
 from stt.correct import correct_transcript
 from stt.devices import pick_input_device
 from stt.filter import is_phantom_transcript, is_whisper_hallucination
@@ -34,58 +33,14 @@ VAD_MODE = 1  # 0-3 (1 = balanced; 3 was clipping words)
 
 SILENCE_LIMIT_FRAMES = 40     # 1.2s silence ends command
 INITIAL_TIMEOUT_FRAMES = 200  # 200 * 30ms = 6s no-speech timeout
-PARTIAL_INTERVAL = 2.0        # Avoid repeated network transcription calls
+PARTIAL_INTERVAL = 2.0        # Avoid repeated local inference calls
 MIN_PARTIAL_FRAMES = 60       # Need ~1.8s speech before a partial call
 MAX_PARTIAL_TRANSCRIPTIONS = 1  # One preview; final transcription is authoritative
 MIN_SPEECH_FRAMES = 8         # Ignore clips shorter than ~240ms
 
-STT_PROMPT = (
-    "The assistant is named Jarvis. Spell it Jarvis, never Harvis, Jervis, or Service. "
-    "Transcribe only what the user actually says. "
-    "Never output subtitle credits, Amara.org, website URLs, video outros, "
-    "or hold phrases like give me a minute. "
-    "Commands: play music, stop music, read headlines, set volume, reduce volume, "
-    "search for, what is, what is the time, tell me a joke, "
-    "open Chrome, WhatsApp, Spotify, YouTube Music, hi jarvis."
-)
-
-# ── Groq Client (lazy singleton) ────────────────────────────────────────────
-_groq_client = None
-
-
-def _get_groq_client():
-    global _groq_client
-    if _groq_client is None:
-        try:
-            from groq import Groq
-            api_key = settings.GROQ_API_KEY
-            _groq_client = Groq(api_key=api_key)
-            print("[STT] Groq client initialized.")
-        except Exception as e:
-            print(f"[STT] Groq client init failed: {e}")
-    return _groq_client
-
-
-def pcm_to_wav(pcm_bytes: bytes) -> bytes:
-    """Convert raw 16-bit PCM to WAV in-memory for Groq API upload."""
-    data_len = len(pcm_bytes)
-    header = struct.pack(
-        '<4sI4s4sIHHIIHH4sI',
-        b'RIFF',
-        36 + data_len,
-        b'WAVE',
-        b'fmt ',
-        16,
-        1,  # PCM
-        1,  # mono
-        SAMPLE_RATE,
-        SAMPLE_RATE * 2,  # byte rate
-        2,  # block align
-        16,  # bits per sample
-        b'data',
-        data_len,
-    )
-    return header + pcm_bytes
+# ── Local Whisper model (lazy singleton) ────────────────────────────────────
+_local_model = None
+_local_model_lock = threading.Lock()
 
 
 def _resample_pcm16(audio: np.ndarray, src_rate: int, dst_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -165,90 +120,65 @@ def normalize_pcm(pcm_bytes: bytes) -> bytes:
     return scaled.tobytes()
 
 
-def transcribe_groq(pcm_bytes: bytes) -> str:
-    """Send audio to Groq whisper-large-v3 and return transcribed text."""
-    client = _get_groq_client()
-    if client is None:
-        return ""
-
-    pcm_bytes = ensure_pcm_audio(pcm_bytes)
-    pcm_bytes = normalize_pcm(pcm_bytes)
-    wav_bytes = pcm_to_wav(pcm_bytes)
-    try:
-        result = client.audio.transcriptions.create(
-            file=("audio.wav", wav_bytes),
-            model="whisper-large-v3",
-            language="en",
-            temperature=0.0,
-            prompt=STT_PROMPT,
-        )
-        return result.text.strip()
-    except Exception as e:
-        print(f"[STT Groq] Transcription error: {e}")
-        return ""
-
-
-# ── Local Whisper Fallback ───────────────────────────────────────────────────
-_model = None
-_model_lock = threading.Lock()
-
-
-def _get_model():
-    global _model
-    if _model is not None:
-        return _model
-    with _model_lock:
-        if _model is not None:
-            return _model
+def _get_local_model():
+    """Load the configured local English Whisper model once."""
+    global _local_model
+    if _local_model is not None:
+        return _local_model
+    with _local_model_lock:
+        if _local_model is not None:
+            return _local_model
         try:
             from faster_whisper import WhisperModel
-            print("[STT] Loading local fallback model (base.en)…")
-            _model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-            print("[STT] Local fallback ready.")
-        except Exception as e:
-            print(f"[STT] Local fallback unavailable: {e}")
-            _model = None
-    return _model
+            model_name = os.environ.get("JARVIS_LOCAL_WHISPER_MODEL", "base.en").strip().lower()
+            if model_name not in {"base.en", "small.en"}:
+                print(f"[STT] Unsupported model {model_name!r}; using base.en (English-only).")
+                model_name = "base.en"
+            print(f"[STT] Loading local English Whisper ({model_name})…")
+            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            print("[STT] Local Whisper ready.")
+        except Exception as exc:
+            print(f"[STT] Local Whisper unavailable: {exc}")
+            _local_model = None
+    return _local_model
 
 
 def transcribe_local(pcm_bytes: bytes) -> str:
-    model = _get_model()
-    if model is None or not pcm_bytes:
+    model = _get_local_model()
+    if model is None:
         return ""
-    pcm_bytes = ensure_pcm_audio(pcm_bytes)
-    pcm_bytes = normalize_pcm(pcm_bytes)
-    audio_array = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     try:
+        pcm_bytes = normalize_pcm(pcm_bytes)
         segments, _ = model.transcribe(
-            audio_array,
-            beam_size=1,
+            np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0,
             language="en",
-            initial_prompt=STT_PROMPT,
+            beam_size=1,
             vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 300},
             condition_on_previous_text=False,
+            initial_prompt="The assistant is named Jarvis.",
         )
-        return " ".join(seg.text.strip() for seg in segments).strip()
-    except Exception as e:
-        print(f"[STT Local] Transcribe error: {e}")
+        return " ".join((segment.text or "").strip() for segment in segments).strip()
+    except Exception as exc:
+        print(f"[STT Local] Transcription error: {exc}")
         return ""
+
+
+def _is_empty_transcript(text: str) -> bool:
+    if not text:
+        return True
+    return bool(re.fullmatch(r"[\s.,!?…'\"\-–—]*", text))
 
 
 def transcribe_audio(pcm_bytes: bytes) -> str:
-    """Primary Groq transcription with local fallback; reject hallucinations."""
+    """Transcribe locally in English; reject hallucinations and silent clips."""
     if not pcm_bytes:
         return ""
     pcm_bytes = ensure_pcm_audio(pcm_bytes)
     if not is_audible_speech(pcm_bytes):
-        print("[STT] Clip too quiet — ignoring (likely noise or speaker echo).")
         return ""
-    text = transcribe_groq(pcm_bytes)
-    if not text or is_whisper_hallucination(text):
-        local = transcribe_local(pcm_bytes)
-        if local and not is_whisper_hallucination(local):
-            text = local
-        elif is_whisper_hallucination(text):
-            text = ""
+    text = transcribe_local(pcm_bytes)
+    if _is_empty_transcript(text) or is_whisper_hallucination(text):
+        return ""
     text = correct_transcript(text)
     if is_phantom_transcript(text):
         return ""
@@ -302,7 +232,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                     break
                 continue
 
-            # Skip partial Groq calls on very short audio — early partials are inaccurate
+            # Skip partial inference on very short audio — early results are inaccurate.
             if item["type"] == "partial" and len(audio_bytes) < MIN_PARTIAL_FRAMES * FRAME_SIZE * 2:
                 continue
             if item["type"] == "partial" and partial_count >= MAX_PARTIAL_TRANSCRIPTIONS:
@@ -424,6 +354,40 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
     final_text = final_result[0].strip()
     print(f"[STT Pipeline] Completed: {final_text!r}")
     return final_text
+
+
+def listen_vad(on_speech_start=None, on_speech_end=None, stop_event=None, timeout: float = 20.0) -> str:
+    """
+    Capture and transcribe speech using the neural Silero VAD + faster-whisper pipeline.
+    Includes rolling 300ms pre-speech buffer, 600ms silence threshold, and barge-in support.
+    """
+    from stt.vad import JarvisVADPipeline
+    result = [""]
+    done_event = threading.Event()
+
+    def _on_transcript(text: str):
+        result[0] = text
+        done_event.set()
+
+    pipeline = JarvisVADPipeline(
+        on_speech_start=on_speech_start,
+        on_speech_end=on_speech_end,
+        on_transcript=_on_transcript,
+    )
+    pipeline.start()
+
+    try:
+        start_time = time.time()
+        while not done_event.is_set():
+            if stop_event and stop_event.is_set():
+                break
+            if time.time() - start_time > timeout:
+                break
+            time.sleep(0.05)
+    finally:
+        pipeline.stop()
+
+    return result[0].strip()
 
 
 if __name__ == "__main__":

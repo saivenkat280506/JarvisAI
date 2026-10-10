@@ -1,7 +1,7 @@
 [
   {
     "name": "open_app",
-    "description": "Open any installed application on Windows. Use for: chrome, notepad, calculator, vscode, spotify, discord, whatsapp, terminal, etc.",
+    "description": "Open any installed application on this Mac. Use for: chrome, textedit/notepad, calculator, vscode, spotify, discord, whatsapp, terminal, safari, finder, etc.",
     "trigger": ["open", "launch", "start", "run"],
     "inputs": ["app_name"],
     "example": "open chrome → {\"skill\":\"open_app\",\"parameters\":{\"app_name\":\"chrome\"},\"action\":\"execute\"}",
@@ -39,7 +39,7 @@
   },
   {
     "name": "whatsapp_send_message",
-    "description": "Send a WhatsApp message to one saved contact, or to all saved individual contacts if the user said all contacts. Never groups.",
+    "description": "Prepare a WhatsApp message draft for a saved individual contact. Require a clear, current confirmation before sending; never groups.",
     "trigger": ["whatsapp", "send message", "message"],
     "inputs": ["contact", "message"],
     "execution": "system_command"
@@ -74,14 +74,14 @@
   },
   {
     "name": "press_key",
-    "description": "Press a keyboard key or hotkey combo. Examples: 'enter', 'ctrl+c', 'alt+f4', 'f5'.",
+    "description": "Press a keyboard key or hotkey combo. Examples: 'enter', 'command+c', 'command+q', 'f5'.",
     "trigger": ["press", "hotkey", "shortcut", "key"],
     "inputs": ["key"],
     "execution": "system_command"
   },
   {
     "name": "write_code",
-    "description": "Write code to a file and open it in VS Code or Notepad. Supports Python, JavaScript, HTML, CSS, C++, Java, etc. Creates the file on the Desktop by default.",
+    "description": "Write code to a file and open it in VS Code or TextEdit. Supports Python, JavaScript, HTML, CSS, C++, Java, etc. Creates the file on the Desktop by default.",
     "trigger": ["write code", "create script", "code for", "write a program", "write a script", "coding"],
     "inputs": ["code", "filename", "language"],
     "example": "write a python script to sort a list → {\"skill\":\"write_code\",\"parameters\":{\"code\":\"...\",\"language\":\"python\",\"filename\":\"sort.py\"},\"action\":\"execute\"}",
@@ -89,10 +89,10 @@
   },
   {
     "name": "run_command",
-    "description": "Run a terminal/PowerShell command and return the output. Use for system queries, running scripts, checking status, etc.",
+    "description": "Run a terminal/zsh command and return the output. Use for system queries, running scripts, checking status, etc.",
     "trigger": ["run command", "terminal", "execute command", "powershell", "cmd", "shell"],
     "inputs": ["command"],
-    "example": "what time is it → {\"skill\":\"run_command\",\"parameters\":{\"command\":\"powershell -Command Get-Date\"},\"action\":\"execute\"}",
+    "example": "what time is it → {\"skill\":\"run_command\",\"parameters\":{\"command\":\"date\"},\"action\":\"execute\"}",
     "execution": "terminal"
   },
   {
@@ -111,7 +111,7 @@
   },
   {
     "name": "click_ui_element",
-    "description": "Click a button or UI element inside a Windows app by its name.",
+    "description": "Click a button or UI element inside a macOS app by its name.",
     "trigger": ["click", "press button"],
     "inputs": ["app_name", "element_name"],
     "execution": "system_command"
@@ -147,7 +147,7 @@
   },
   {
     "name": "autonomous_task",
-    "description": "For complex multi-step tasks that require visual screen control. The autonomous agent can SEE the screen via screenshots and control mouse/keyboard to accomplish tasks like navigating apps, filling forms, interacting with complex UIs, or any task requiring multiple coordinated steps across the OS.",
+    "description": "For complex multi-step OS tasks. The agent checks accessibility, browser MCP snapshots, and shell/AppleScript MCP results first; it requests a screenshot only when text observations cannot answer the next step, then uses MCP-controlled mouse/keyboard actions.",
     "trigger": ["do this", "navigate to", "complex task", "multi-step", "interact with"],
     "inputs": ["task"],
     "example": "open spotify and play lofi playlist → {\"skill\":\"autonomous_task\",\"parameters\":{\"task\":\"Open Spotify, search for lofi hip hop, and play the first playlist\"},\"action\":\"execute\"}",

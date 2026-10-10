@@ -7,11 +7,13 @@ _lock = threading.Lock()
 
 DEFAULTS = {
     "muted": False,
+    "chromeProfileEmail": "challasaivenkat06@gmail.com",
     "autoWake": True,
     "realTimeFeedback": True,
     "volume": 80,
     "confidence": 85,
     "theme": "light",
+    "model": "qwen3:4b",
 }
 
 def get_settings() -> dict:

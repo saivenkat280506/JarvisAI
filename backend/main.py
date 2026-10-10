@@ -9,16 +9,15 @@ import sys
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-# Windows consoles often use cp1252 — unicode log arrows must not crash the pipeline
+# Force UTF-8 logs so unicode output does not crash the pipeline
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-# Add backend and root to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Ensure the backend package directory is importable (config, services, brain, ...)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 if getattr(sys, 'frozen', False):
     env_path = os.path.join(os.path.dirname(sys.executable), '.env')

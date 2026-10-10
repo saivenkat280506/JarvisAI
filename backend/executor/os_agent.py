@@ -1,87 +1,44 @@
                     
 """
-os_agent.py — Autonomous Vision-Powered OS Agent
-=================================================
-Uses screenshot-based vision (Groq multimodal) to SEE the screen,
-then issues precise actions to control the entire Windows desktop.
+os_agent.py — Autonomous text-first OS agent
+============================================
+Uses accessibility, browser MCP snapshots, and audited system tools first.
+Local screenshot vision is requested only when text observations are insufficient.
 
 This is the core of Jarvis's autonomous control system.
 """
 
-import pyautogui
-import pywinauto
 import time
 import re
-import os
-import subprocess
-import base64
 import json
-import mss
-from io import BytesIO
-from PIL import Image
-from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
+from brain.llm_provider import ChatLLM
 
-# Safety: disable fail-safe so mouse can reach corners of the screen during automation.
-# WARNING: FAILSAFE=False removes the emergency corner escape. Use responsibly.
-pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.1
+from executor.sys_platform import IS_MAC, MOD_KEY, list_visible_windows
+from mcp_clients import macos as mcp_gui
+from mcp_clients import shell as mcp_shell
 
 # ── Screenshot Engine ──────────────────────────────────────────────────────────
 
 def capture_screenshot_b64(quality: int = 70) -> str:
-    """Capture the full screen, compress, and return base64-encoded JPEG."""
-    with mss.mss() as sct:
-        monitor = sct.monitors[1]
-        sct_img = sct.grab(monitor)
-        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-        # Resize for faster LLM processing while keeping enough detail
-        img.thumbnail((1280, 720))
-        buffer = BytesIO()
-        img.save(buffer, format="JPEG", quality=quality)
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    """Capture a screen image through the audited macOS MCP screenshot tool."""
+    size = mcp_gui.gui_screen_size()
+    width = max(1, min(int(size.get("width", 0)), 8192))
+    height = max(1, min(int(size.get("height", 0)), 8192))
+    if width < 2 or height < 2:
+        raise RuntimeError("Could not read screen dimensions through macOS MCP.")
+    return mcp_gui.gui_screenshot_region(0, 0, width, height)
+
+
+def _make_vision_llm():
+    """Vision-tier client — the chat model rejects images (HTTP 400)."""
+    from brain.llm_provider import VISION_MODEL
+    return ChatLLM(temperature=0.1, max_tokens=1024, model=VISION_MODEL)
 
 
 def get_os_virtual_dom() -> str:
-    """
-    Scans the Desktop using pywinauto UIAutomation to create a lightweight 
-    'Virtual DOM' of visible windows and their child elements.
-    """
-    try:
-        desktop = pywinauto.Desktop(backend="uia")
-        windows = desktop.windows(visible_only=True)
-        
-        dom_lines = []
-        for i, win in enumerate(windows):
-            title = win.window_text()
-            if not title or "Jarvis" in title or "Taskbar" in title:
-                continue
-            
-            rect = win.rectangle()
-            if rect.width() < 50 or rect.height() < 50:
-                continue
-                
-            dom_lines.append(f"[{i}] WINDOW: '{title}' at ({rect.left},{rect.top},{rect.right},{rect.bottom})")
-            
-            try:
-                children = win.children()
-                for c_idx, child in enumerate(children[:20]):
-                    c_title = child.window_text()
-                    c_type = child.friendly_class_name()
-                    c_rect = child.rectangle()
-                    if c_title and c_rect.width() > 10:
-                        cx = (c_rect.left + c_rect.right) // 2
-                        cy = (c_rect.top + c_rect.bottom) // 2
-                        dom_lines.append(
-                            f"    [{i}.{c_idx}] {c_type}: '{c_title}' "
-                            f"center=({cx},{cy}) bounds=({c_rect.left},{c_rect.top},{c_rect.right},{c_rect.bottom})"
-                        )
-            except:
-                pass
-                
-        return "\n".join(dom_lines) if dom_lines else "No major windows visible on screen."
-    except Exception as e:
-        return f"Error scanning UI: {e}"
+    """Scan visible macOS windows via System Events."""
+    return list_visible_windows()
 
 
 # ── Action Executor ────────────────────────────────────────────────────────────
@@ -102,6 +59,9 @@ def execute_os_action(action_str: str) -> str:
       WAIT(seconds)
       OPEN_URL("https://...")           — opens URL in default browser
       RUN_CMD("command string")         — runs a shell command
+      BROWSER("snapshot", {})           — inspect the active browser through MCP
+      BROWSER("navigate", {"url": "..."})
+      NEED_VISION("reason")              — request one screenshot when text context is insufficient
       SCREENSHOT()                      — returns that a screenshot was taken
       DONE("summary of what was done")
     """
@@ -112,7 +72,7 @@ def execute_os_action(action_str: str) -> str:
             coords = re.findall(r'\d+', cmd)
             if len(coords) >= 2:
                 x, y = int(coords[0]), int(coords[1])
-                pyautogui.click(x, y)
+                mcp_gui.gui_click(x, y)
                 return f"Clicked at ({x}, {y})"
             return "CLICK requires (x, y) coordinates"
             
@@ -121,7 +81,7 @@ def execute_os_action(action_str: str) -> str:
             coords = re.findall(r'\d+', cmd)
             if len(coords) >= 2:
                 x, y = int(coords[0]), int(coords[1])
-                pyautogui.doubleClick(x, y)
+                mcp_gui.gui_double_click(x, y)
                 return f"Double-clicked at ({x}, {y})"
                 
         # ── RIGHT_CLICK ──
@@ -129,7 +89,7 @@ def execute_os_action(action_str: str) -> str:
             coords = re.findall(r'\d+', cmd)
             if len(coords) >= 2:
                 x, y = int(coords[0]), int(coords[1])
-                pyautogui.rightClick(x, y)
+                mcp_gui.gui_right_click(x, y)
                 return f"Right-clicked at ({x}, {y})"
         
         # ── TYPE_SLOW (character by character for search bars etc.) ──
@@ -138,7 +98,8 @@ def execute_os_action(action_str: str) -> str:
             if content:
                 text = content.group(1)
                 for char in text:
-                    pyautogui.press(char) if len(char) == 1 else None
+                    if len(char) == 1:
+                        mcp_gui.gui_press(char)
                     time.sleep(0.05)
                 return f"Slowly typed '{text}'"
                 
@@ -147,41 +108,49 @@ def execute_os_action(action_str: str) -> str:
             content = re.search(r'TYPE\("(.+?)"\)', cmd, re.DOTALL)
             if content:
                 text = content.group(1)
-                # Use pyperclip + ctrl+v for reliability with special chars
+                # Clipboard + Command+V for reliability with special chars (MCP)
                 try:
-                    import pyperclip
-                    pyperclip.copy(text)
-                    pyautogui.hotkey('ctrl', 'v')
+                    mcp_gui.set_clipboard(text)
+                    mcp_gui.gui_hotkey([MOD_KEY, "v"])
                     time.sleep(0.2)
-                    return f"Typed '{text}'"
-                except ImportError:
-                    pyautogui.write(text, interval=0.02)
-                    return f"Typed '{text}'"
+                except Exception:
+                    mcp_gui.gui_type(text, interval=0.02)
+                return f"Typed '{text}'"
                     
         # ── PRESS ──
         elif cmd.startswith("PRESS"):
             key_match = re.search(r'PRESS\("(.+?)"\)', cmd)
             if key_match:
                 key = key_match.group(1).lower()
-                pyautogui.press(key)
+                mcp_gui.gui_press(key)
                 return f"Pressed '{key}'"
                 
         # ── HOTKEY ──
         elif cmd.startswith("HOTKEY"):
             keys = re.findall(r'"([^"]+)"', cmd)
             if keys:
-                pyautogui.hotkey(*[k.lower() for k in keys])
-                return f"Pressed hotkey {keys}"
+                mapped = []
+                for k in keys:
+                    key = k.lower()
+                    if IS_MAC and key in ("ctrl", "control"):
+                        key = "command"
+                    if IS_MAC and key == "alt":
+                        key = "option"
+                    if IS_MAC and key == "win":
+                        key = "command"
+                    mapped.append(key)
+                mcp_gui.gui_hotkey(mapped)
+                return f"Pressed hotkey {mapped}"
                 
         # ── SCROLL ──
         elif cmd.startswith("SCROLL"):
             nums = re.findall(r'-?\d+', cmd)
             if len(nums) >= 3:
                 x, y, clicks = int(nums[0]), int(nums[1]), int(nums[2])
-                pyautogui.scroll(clicks, x=x, y=y)
+                mcp_gui.gui_scroll(clicks, x=x, y=y)
                 return f"Scrolled {clicks} clicks at ({x}, {y})"
             elif len(nums) >= 1:
-                pyautogui.scroll(int(nums[0]))
+                mcp_gui.gui_scroll(int(nums[0]))
                 return f"Scrolled {nums[0]} clicks"
                 
         # ── MOVE ──
@@ -189,7 +158,7 @@ def execute_os_action(action_str: str) -> str:
             coords = re.findall(r'\d+', cmd)
             if len(coords) >= 2:
                 x, y = int(coords[0]), int(coords[1])
-                pyautogui.moveTo(x, y)
+                mcp_gui.gui_move(x, y)
                 return f"Moved mouse to ({x}, {y})"
                 
         # ── WAIT ──
@@ -205,18 +174,41 @@ def execute_os_action(action_str: str) -> str:
             url_match = re.search(r'OPEN_URL\("(.+?)"\)', cmd)
             if url_match:
                 url = url_match.group(1)
-                import webbrowser
-                webbrowser.open(url)
-                return f"Opened URL: {url}"
+                if mcp_gui.open_uri(url):
+                    return f"Opened URL: {url}"
+                return f"Failed to open URL: {url}"
                 
         # ── RUN_CMD ──
         elif cmd.startswith("RUN_CMD"):
             cmd_match = re.search(r'RUN_CMD\("(.+?)"\)', cmd)
             if cmd_match:
                 shell_cmd = cmd_match.group(1)
-                result = subprocess.run(shell_cmd, shell=True, capture_output=True, text=True, timeout=15)
-                output = result.stdout.strip() or result.stderr.strip() or "Command completed"
+                result = mcp_shell.run_command(shell_cmd, timeout=15)
+                output = (result.get("stdout") or "").strip() or (result.get("stderr") or "").strip() or "Command completed"
                 return f"Command result: {output[:500]}"
+
+        # ── BROWSER MCP ──
+        elif cmd.startswith("BROWSER"):
+            match = re.search(r'BROWSER\(\s*(["\'])(.*?)\1\s*,\s*(\{.*\})\s*\)', cmd, re.DOTALL)
+            if not match:
+                return 'BROWSER requires BROWSER("action", {"key": "value"})'
+            action = match.group(2)
+            try:
+                params = json.loads(match.group(3))
+            except json.JSONDecodeError as exc:
+                return f"BROWSER parameters must be JSON: {exc}"
+            if not isinstance(params, dict):
+                return "BROWSER parameters must be a JSON object"
+            from mcp_clients import browser as mcp_browser
+            result = mcp_browser.command(action, params)
+            if result.get("ok") is False:
+                return f"BROWSER_ERROR: {result.get('error') or result.get('message') or 'Browser action failed'}"
+            return f"BROWSER_RESULT: {json.dumps(result, ensure_ascii=False)[:1200]}"
+
+        # ── NEED_VISION ──
+        elif cmd.startswith("NEED_VISION"):
+            reason = re.search(r'NEED_VISION\(["\'](.*?)["\']\)', cmd, re.DOTALL)
+            return f"VISION_REQUESTED: {reason.group(1) if reason else 'Text context was insufficient'}"
                 
         # ── SCREENSHOT ──
         elif cmd.startswith("SCREENSHOT"):
@@ -234,37 +226,37 @@ def execute_os_action(action_str: str) -> str:
 
 # ── Main Agent Loop ────────────────────────────────────────────────────────────
 
-def run_os_agent(task_description: str, max_steps: int = 15, use_vision: bool = True) -> str:
+def run_os_agent(task_description: str, max_steps: int = 15, use_vision: bool = False) -> str:
     """
     Autonomous agent loop that:
-    1. Takes a screenshot of the screen (vision mode) OR reads the UI tree
-    2. Sends it to the LLM with the task description
+    1. Reads the UI tree and browser snapshot data
+    2. Requests a screenshot only when text observations are insufficient
     3. Receives the next action command
     4. Executes it
     5. Repeats until DONE or max_steps reached
     
     Returns the final summary string.
     """
-    
-    # Use vision model for screenshot-based control
+
+    # A screenshot is opt-in per step. Keep the default observation text-first.
+    llm_vision = None
     if use_vision:
         try:
-            llm_vision = ChatGroq(
-                model_name="llama-3.2-11b-vision-preview",
-                temperature=0.1,
-                max_tokens=1024,
-            )
+            llm_vision = _make_vision_llm()
         except Exception:
             use_vision = False
     
     # Fallback text-only model
-    llm_text = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0.1)
+    llm_text = ChatLLM(temperature=0.1)
     
-    system_prompt = f"""You are JARVIS, an autonomous OS-level agent with FULL CONTROL of a Windows PC.
+    host_os = "macOS"
+    system_prompt = f"""You are JARVIS, an autonomous OS-level agent with FULL CONTROL of a {host_os} machine.
 You are performing this task: {task_description}
 
-You can SEE the screen via screenshots and a UI element tree.
-Your job: issue ONE command per turn to accomplish the task step-by-step.
+Start with text observations: the accessibility/UI tree, browser MCP snapshots,
+and shell/AppleScript MCP results. Request a screenshot with
+NEED_VISION("what you need to inspect") only when those sources cannot answer
+the next step. Your job: issue ONE command per turn.
 
 AVAILABLE COMMANDS:
 1.  CLICK(x, y)              — Left click at screen coordinates
@@ -273,18 +265,22 @@ AVAILABLE COMMANDS:
 4.  TYPE("text")              — Type text (uses clipboard paste - fast & reliable)
 5.  TYPE_SLOW("text")         — Type text char-by-char (for search boxes that filter as you type)
 6.  PRESS("key")              — Press a single key: enter, tab, escape, backspace, space, f5, etc.
-7.  HOTKEY("ctrl", "t")       — Press keyboard shortcut combo
+7.  HOTKEY("{MOD_KEY}", "t") — Press keyboard shortcut combo
 8.  SCROLL(x, y, clicks)     — Scroll at position. Negative clicks = scroll down, positive = scroll up
 9.  MOVE(x, y)                — Move mouse cursor to coordinates
 10. WAIT(seconds)             — Wait/pause (max 10s)
 11. OPEN_URL("https://...")   — Open a URL in the default browser
-12. RUN_CMD("command")        — Run a shell/PowerShell command
-13. SCREENSHOT()              — Take a fresh screenshot (to check current state)
-14. DONE("summary")           — Finish the task with a summary
+12. RUN_CMD("command")        — Run a shell command
+13. BROWSER("snapshot", {{}})  — Inspect visible browser controls and links via MCP
+14. BROWSER("navigate", {{"url":"https://..."}}) — Navigate via browser MCP
+15. NEED_VISION("reason")    — Request a screenshot for a specific visual question
+16. DONE("summary")           — Finish the task with a summary
 
 CRITICAL RULES:
 - Output ONLY the single command. No explanation, no extra text.
-- For clicking buttons/links: use the CENTER coordinates from the UI tree or estimate from the screenshot.
+- Prefer browser snapshot and accessibility data before coordinates.
+- Screenshots are on demand; don't request one if text observations answer the next step.
+- For clicking desktop controls: use CENTER coordinates from the UI tree or screenshot.
 - When typing in a browser's address bar: first CLICK the address bar, then TYPE the URL, then PRESS("enter").
 - For YouTube: OPEN_URL("https://www.youtube.com/results?search_query=YOUR+SEARCH") to search directly.
 - For playing a video: after search results load, CLICK on the video thumbnail.
@@ -294,29 +290,41 @@ CRITICAL RULES:
 - If the task is simple (e.g., open a URL), you can do it in 1-2 steps. Don't over-complicate.
 - Use RUN_CMD for system operations like creating files, running scripts, checking status.
 - Be PRECISE with coordinates. Look at the UI tree element centers for accurate targeting.
+- On macOS: notepad means TextEdit, explorer means Finder, cmd means Terminal, use Command not Ctrl.
 
 SHORTCUTS YOU KNOW:
-- Win+R: Run dialog
-- Ctrl+T: New browser tab
-- Ctrl+L / F6: Focus address bar in browser
-- Ctrl+W: Close current tab
-- Alt+F4: Close window
-- Win+E: Open File Explorer
-- Ctrl+C/V/X: Copy/Paste/Cut
-- Ctrl+S: Save
-- Ctrl+Z: Undo
+- Command+Space (Spotlight)
+- {MOD_KEY}+T: New browser tab
+- {MOD_KEY}+L: Focus address bar in browser
+- {MOD_KEY}+W: Close current tab
+- Command+Q: Close window
+- {MOD_KEY}+C/V/X: Copy/Paste/Cut
+- {MOD_KEY}+S: Save
+- {MOD_KEY}+Z: Undo
 """
     
     messages = [SystemMessage(content=system_prompt)]
     action_history = []
+    vision_requested = bool(use_vision)
+    previous_action_failed = False
     
     for step in range(max_steps):
         time.sleep(0.8)  # Let screen settle
         
         # Build the observation context
-        ui_tree = get_os_virtual_dom()
-        
-        if use_vision:
+        try:
+            ui_tree = get_os_virtual_dom()
+        except Exception as exc:
+            ui_tree = f"Accessibility/UI tree unavailable: {exc}"
+            previous_action_failed = True
+
+        if (vision_requested or previous_action_failed) and llm_vision is None:
+            try:
+                llm_vision = _make_vision_llm()
+            except Exception:
+                llm_vision = None
+
+        if llm_vision and (vision_requested or previous_action_failed):
             try:
                 screenshot_b64 = capture_screenshot_b64()
                 observation_msg = HumanMessage(content=[
@@ -326,19 +334,21 @@ SHORTCUTS YOU KNOW:
                             f"Step {step + 1}/{max_steps}. Task: {task_description}\n\n"
                             f"UI Element Tree:\n{ui_tree}\n\n"
                             f"Previous actions taken: {json.dumps(action_history[-5:]) if action_history else 'None yet'}\n\n"
-                            "I've attached a screenshot of the current screen. "
+                            "A screenshot was requested because text observations were insufficient. "
                             "Analyze everything visible and issue your NEXT command."
                         )
                     },
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{screenshot_b64}"
+                        "url": f"data:image/png;base64,{screenshot_b64}"
                         }
                     }
                 ])
                 messages.append(observation_msg)
                 response = llm_vision.invoke(messages)
+                vision_requested = False
+                previous_action_failed = False
             except Exception as e:
                  # Create a copy of messages and sanitize for text-only model
                 sanitized_messages = []
@@ -358,6 +368,8 @@ SHORTCUTS YOU KNOW:
                 ))
                 sanitized_messages.append(observation_msg)
                 response = llm_text.invoke(sanitized_messages)
+                vision_requested = False
+                previous_action_failed = False
         else:
             observation_msg = HumanMessage(content=(
                 f"Step {step + 1}/{max_steps}. Task: {task_description}\n\n"
@@ -367,6 +379,8 @@ SHORTCUTS YOU KNOW:
             ))
             messages.append(observation_msg)
             response = llm_text.invoke(messages)
+            vision_requested = False
+            previous_action_failed = False
         
         cmd = response.content.strip()
         # Clean up any markdown or extra text
@@ -384,9 +398,18 @@ SHORTCUTS YOU KNOW:
             msg = re.search(r'DONE\("(.+?)"\)', cmd, re.DOTALL)
             summary = msg.group(1) if msg else "Task completed"
             return f"SUCCESS: {summary}"
+
+        if cmd.startswith("NEED_VISION"):
+            vision_requested = True
+            result = execute_os_action(cmd)
+            messages.append(HumanMessage(content=f"Action result: {result}. On the next turn, provide a screenshot if vision is available."))
+            continue
         
         # Execute the action
         result = execute_os_action(cmd)
+        previous_action_failed = any(marker in result.lower() for marker in ("failed", "error", "unavailable"))
+        if previous_action_failed:
+            vision_requested = True
         action_history.append({"step": step + 1, "command": cmd, "result": result})
         
         # Check if execute_os_action returned a TASK_COMPLETE 

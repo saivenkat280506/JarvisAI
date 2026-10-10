@@ -10,10 +10,11 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-import webbrowser
 from pathlib import Path
 
 import pygame
+
+from executor.sys_platform import open_url
 
 LOCAL_MUSIC_DIR = Path(__file__).resolve().parent.parent / "local_music"
 GARAGE_TRACK = LOCAL_MUSIC_DIR / "garage_music.mp3"
@@ -39,7 +40,7 @@ def _ensure_mixer():
 
 
 def _apply_music_volume():
-    """Apply effective volume to pygame mixer only (never touches Windows master volume)."""
+    """Apply effective volume to pygame mixer only (never touches macOS master volume)."""
     if not pygame.mixer.get_init():
         return
     if _music_muted:
@@ -158,38 +159,19 @@ def _unduck() -> None:
 
 
 def duck_for_speech() -> bool:
-    """
-    Keep garage music playing under JARVIS voice.
-    Windows master volume is set to 25% by volume_control.garage_volume_for_speech().
-    Mixer stays audible; system slider does the real duck.
-    """
-    try:
-        from executor.volume_control import garage_volume_for_speech, is_garage_volume_session
-        if is_garage_volume_session() or is_local_music_playing():
-            garage_volume_for_speech()
-            return True
-    except Exception as exc:
-        print(f"[Music] duck_for_speech windows vol failed: {exc}")
-    # Fallback: lower pygame mixer only
+    """Lower pygame music only. Never touch the Mac output slider — that clicks."""
     return _duck_to(DUCK_SPEAK_PCT)
 
 
 def resume_after_speech():
-    """Restore Windows 50% (or mixer) after JARVIS finishes speaking."""
-    try:
-        from executor.volume_control import garage_volume_for_play, is_garage_volume_session
-        if is_garage_volume_session():
-            garage_volume_for_play()
-            return
-    except Exception:
-        pass
+    """Restore garage-track mixer level after JARVIS finishes speaking."""
     _unduck()
 
 
 def pause_for_listening() -> bool:
     """
-    Do NOT stop music. Drop Windows master volume to 20% so the mic hears
-    the user, not the garage track.
+    Do NOT stop music. Duck the garage-track mixer so the mic hears
+    the user, not the track.
     """
     try:
         from executor.volume_control import garage_volume_for_listen, is_garage_volume_session
@@ -197,12 +179,12 @@ def pause_for_listening() -> bool:
             garage_volume_for_listen()
             return True
     except Exception as exc:
-        print(f"[Music] pause_for_listening windows vol failed: {exc}")
+        print(f"[Music] pause_for_listening mixer duck failed: {exc}")
     return _duck_to(DUCK_LISTEN_PCT)
 
 
 def resume_after_listening():
-    """Restore Windows 50% after STT finishes listening."""
+    """Restore mixer play level after STT finishes listening."""
     try:
         from executor.volume_control import garage_volume_for_play, is_garage_volume_session
         if is_garage_volume_session():
@@ -271,7 +253,7 @@ def _start_garage_track() -> bool:
 def play_local_garage(volume: int | None = DEFAULT_GARAGE_VOLUME) -> tuple[bool, str]:
     """
     Play the default garage track from backend/local_music/garage_music.mp3.
-    Only adjusts pygame garage-track volume (default 50%) — never Windows master volume.
+    Only adjusts pygame garage-track volume (default 50%) — never macOS master volume.
     """
     global _duck_active
     if not GARAGE_TRACK.exists():
@@ -285,7 +267,7 @@ def play_local_garage(volume: int | None = DEFAULT_GARAGE_VOLUME) -> tuple[bool,
             if _start_garage_track():
                 return True, f"Playing garage music at {_music_volume} percent, sir."
 
-            # Retry once after reinitializing the mixer (Windows/SDL can miss the first start).
+            # Retry once after reinitializing the mixer (SDL can miss the first start).
             if pygame.mixer.get_init():
                 pygame.mixer.quit()
             _start_garage_track()
@@ -310,7 +292,7 @@ def play_youtube_search(song: str) -> tuple[bool, str]:
     try:
         query = urllib.parse.quote_plus(song.strip())
         url = f"https://www.youtube.com/results?search_query={query}"
-        webbrowser.open(url)
+        open_url(url)
         return True, f"Opened YouTube search for {song.strip()}, sir."
     except Exception as exc:
         return False, f"Failed to open YouTube: {exc}"
@@ -329,11 +311,11 @@ def play_youtube_music(song: str) -> tuple[bool, str]:
         vid_ids = re.findall(r'"videoId":"([^"]{11})"', html)
         if vid_ids:
             music_url = f"https://music.youtube.com/watch?v={vid_ids[0]}"
-            webbrowser.open(music_url)
+            open_url(music_url)
             return True, f"Playing {song.strip()} on YouTube Music, sir."
 
         music_url = f"https://music.youtube.com/search?q={query}"
-        webbrowser.open(music_url)
+        open_url(music_url)
         return True, f"Opened YouTube Music search for {song.strip()}, sir."
     except Exception as exc:
         return False, f"Failed to play on YouTube Music: {exc}"
@@ -345,7 +327,7 @@ def play_spotify(song: str) -> tuple[bool, str]:
     try:
         query = urllib.parse.quote(song.strip())
         url = f"https://open.spotify.com/search/{query}"
-        webbrowser.open(url)
+        open_url(url)
         return True, f"Searching for {song.strip()} on Spotify, sir."
     except Exception as exc:
         return False, f"Failed to open Spotify: {exc}"

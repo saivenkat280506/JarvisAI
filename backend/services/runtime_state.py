@@ -15,6 +15,8 @@ class SystemState(Enum):
     TRANSCRIBING = "transcribing"
     PROCESSING = "thinking"
     SPEAKING = "talking"
+    ACTING = "acting"
+    NEEDS_APPROVAL = "needs-approval"
 
 
 class RuntimeFlags:
@@ -36,6 +38,14 @@ class RuntimeFlags:
         self.last_intent: str = ""
         self.processed_ids: set = set()
 
+        # Ephemeral browser research notebook. It deliberately lives in the
+        # running process, not long-term memory, so a new unrelated topic
+        # cannot inherit old research.
+        self.research_topic: str = ""
+        self.research_entries: list[dict] = []
+        self.barge_in_text: str = ""
+        self.listen_not_before: float = 0.0
+
         self.stop_event: threading.Event = threading.Event()
         self.state_lock: threading.Lock = threading.Lock()
 
@@ -49,6 +59,9 @@ class RuntimeFlags:
         self.processed_ids.clear()
         self.speak_epoch += 1
         self.stop_event.set()
+        self.research_topic = ""
+        self.research_entries = []
+        self.listen_not_before = 0.0
 
     def prepare_for_new_command(self):
         """Allow a fresh chat/text command after reset or stop."""

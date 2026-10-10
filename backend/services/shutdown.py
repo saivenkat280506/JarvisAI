@@ -89,6 +89,13 @@ async def shutdown_all_services(reason: str = "app_close") -> dict:
         except Exception as exc:
             print(f"[Shutdown] Process monitor stop error: {exc}")
 
+        # ── MCP action servers (shell / macos) ───────────────────────────────
+        try:
+            from mcp_clients import shutdown_all as shutdown_mcp
+            shutdown_mcp()
+        except Exception as exc:
+            print(f"[Shutdown] MCP servers error: {exc}")
+
         # ── Unblock voice loop / wake detector waits ────────────────────────
         try:
             from services.voice_loop import _wake_signal

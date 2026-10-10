@@ -2,42 +2,48 @@
 automation.py — Lightweight Automation Suite
 ===========================================
 Provides simple system and browser automation without heavy dependencies.
-Now features autonomous screen recording for WhatsApp messaging, and
-iterative search logging and summarization via Notepad.
+WhatsApp via the native macOS app (whatsapp:// + AppleScript).
+Search logs open in TextEdit.
 """
 
-import subprocess
 import os
 import re
 import json
 import csv
-import ctypes
-from ctypes import wintypes
-import webbrowser
+import base64
 import urllib.parse
 import time
 from difflib import get_close_matches
-import pyautogui
-pyautogui.FAILSAFE = False
-from pywinauto import Application, keyboard
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from config import settings
+from executor.sys_platform import (
+    MOD_KEY,
+    desktop_dir,
+    focus_application,
+    get_clipboard,
+    is_app_running,
+    keystroke_in_app,
+    kill_named,
+    open_application,
+    open_uri,
+    open_url,
+    osascript,
+    pids_matching,
+    set_clipboard,
+    window_bounds,
+)
+from mcp_clients import macos as mcp_gui
+from mcp_clients import shell as mcp_shell
 
 try:
     import cv2
     import numpy as np
-    from mss import mss
     import threading
     HAS_RECORDING_DEPS = True
 except ImportError:
     HAS_RECORDING_DEPS = False
-
-try:
-    import pyperclip
-    HAS_CLIPBOARD = True
-except ImportError:
-    HAS_CLIPBOARD = False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCREEN RECORDER COMPONENT
@@ -52,7 +58,7 @@ class ScreenRecorder:
         
     def start(self):
         if not HAS_RECORDING_DEPS:
-            print("[ScreenRecorder] Missing dependencies (cv2, numpy, mss). Cannot record.")
+            print("[ScreenRecorder] Missing dependencies (cv2, numpy). Cannot record.")
             return
         self.recording = True
         self.thread = threading.Thread(target=self._record_loop, name="ScreenRecorderLoop")
@@ -68,30 +74,33 @@ class ScreenRecorder:
         
     def _record_loop(self):
         try:
-            with mss() as sct:
-                monitor = sct.monitors[1]  # Primary monitor
-                width = monitor["width"]
-                height = monitor["height"]
-                
-                # Setup MP4 codec and VideoWriter
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(self.filename, fourcc, self.fps, (width, height))
-                
-                last_time = time.time()
-                interval = 1.0 / self.fps
-                
+            size = mcp_gui.gui_screen_size()
+            width = max(1, int(size.get("width", 0)))
+            height = max(1, int(size.get("height", 0)))
+            if width < 2 or height < 2:
+                raise RuntimeError("Could not read screen dimensions through macOS MCP")
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = None
+            interval = 1.0 / max(float(self.fps), 0.1)
+            try:
                 while self.recording:
-                    now = time.time()
-                    elapsed = now - last_time
-                    if elapsed < interval:
-                        time.sleep(interval - elapsed)
-                        
-                    img = np.array(sct.grab(monitor))
-                    frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                    started = time.monotonic()
+                    payload = mcp_gui.gui_screenshot_region(0, 0, width, height)
+                    encoded = np.frombuffer(base64.b64decode(payload), dtype=np.uint8)
+                    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        raise RuntimeError("macOS MCP returned an invalid screenshot")
+                    frame_h, frame_w = frame.shape[:2]
+                    if out is None:
+                        out = cv2.VideoWriter(self.filename, fourcc, self.fps, (frame_w, frame_h))
                     out.write(frame)
-                    last_time = time.time()
-                    
-                out.release()
+                    remaining = interval - (time.monotonic() - started)
+                    if remaining > 0:
+                        time.sleep(remaining)
+            finally:
+                if out is not None:
+                    out.release()
         except Exception as e:
             print(f"[ScreenRecorder] Error during capture: {e}")
 
@@ -100,256 +109,129 @@ class ScreenRecorder:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def open_browser(manual_path=None):
-    """Opens the Arc browser or fallback."""
-    if manual_path:
-        arc_path = manual_path
-    else:
-        user_home = os.path.expanduser("~")
-        arc_path = os.path.join(user_home, "AppData", "Local", "Programs", "Arc", "Arc.exe")
-    
-    if os.path.exists(arc_path):
+    """Opens Arc, Chrome, or the default browser."""
+    if manual_path and os.path.exists(manual_path):
         try:
-            subprocess.Popen([arc_path], shell=False)
-            return True, "Successfully opened Arc browser."
+            result = mcp_shell.open_path(manual_path)
+            if result.get("ok"):
+                return True, "Successfully opened browser."
+            return False, f"Failed to open browser: {result.get('stderr') or 'open failed'}"
         except Exception as e:
-            return False, f"Failed to open Arc browser: {str(e)}"
-    
+            return False, f"Failed to open browser: {str(e)}"
+
+    for app in ("Arc", "Google Chrome", "Safari"):
+        ok, msg = open_application(app)
+        if ok:
+            return True, msg
     try:
-        webbrowser.open("about:blank")
-        return True, "Arc browser not found. Opened default browser as fallback."
+        open_url("about:blank")
+        return True, "Opened default browser as fallback."
     except Exception as e:
         return False, f"Failed to open any browser: {str(e)}"
 
-# ── WhatsApp Desktop (WhatsApp.Root / WinUI) ──────────────────────────────────
-# This Store build exposes almost no UIA Edit controls. The reliable flow is:
-# open app → wait until loaded → open the saved chat → clear → type → send.
+# ── WhatsApp Desktop (macOS) ─────────────────────────────────────────────────
+# Native WhatsApp.app via whatsapp:// URL scheme.
+# SEND IS FROZEN: open Sathish's chat and type a draft only. Never Return/Send.
 
 _CONTACTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_contacts.json")
-_user32 = ctypes.windll.user32
-_kernel32 = ctypes.windll.kernel32
-_SW_RESTORE = 9
-_SW_SHOW = 5
-_WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-_BROWSER_WINDOW_CLASSES = (
-    "Chrome_WidgetWin_0",
-    "Chrome_WidgetWin_1",
-    "MozillaWindowClass",
-)
-
-
-def _ensure_dpi_aware():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            _user32.SetProcessDPIAware()
-        except Exception:
-            pass
+WHATSAPP_SEND_FROZEN = True
+SATHISH_PHONE_TAIL = "8519929108"
+SATHISH_NAMES = {"sathish", "satish"}
 
 
 def _whatsapp_pids() -> set:
-    pids = set()
-    try:
-        res = subprocess.run(
-            "tasklist /fo csv /nh",
-            shell=True,
-            capture_output=True,
-            text=True,
-        )
-        for row in csv.reader(res.stdout.splitlines()):
-            if len(row) < 2:
-                continue
-            name = row[0].strip().strip('"')
-            if "whatsapp" in name.lower():
-                try:
-                    pids.add(int(row[1].strip().strip('"')))
-                except ValueError:
-                    continue
-    except Exception as exc:
-        print(f"[WhatsApp] Could not list processes: {exc}")
-    return pids
-
-
-def _window_info(hwnd: int) -> dict:
-    length = _user32.GetWindowTextLengthW(hwnd)
-    title_buf = ctypes.create_unicode_buffer(length + 1)
-    _user32.GetWindowTextW(hwnd, title_buf, length + 1)
-    cls_buf = ctypes.create_unicode_buffer(256)
-    _user32.GetClassNameW(hwnd, cls_buf, 256)
-    pid = wintypes.DWORD()
-    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    rect = wintypes.RECT()
-    _user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    return {
-        "hwnd": int(hwnd),
-        "title": title_buf.value,
-        "class": cls_buf.value,
-        "pid": pid.value,
-        "left": rect.left,
-        "top": rect.top,
-        "right": rect.right,
-        "bottom": rect.bottom,
-        "w": rect.right - rect.left,
-        "h": rect.bottom - rect.top,
-        "visible": bool(_user32.IsWindowVisible(hwnd)),
-        "iconic": bool(_user32.IsIconic(hwnd)),
-    }
-
-
-def _is_browser_whatsapp(info: dict) -> bool:
-    title = (info.get("title") or "").lower()
-    cls = info.get("class") or ""
-    if cls in _BROWSER_WINDOW_CLASSES or cls.startswith("Chrome_WidgetWin"):
-        return True
-    if "whatsapp web" in title:
-        return True
-    if re.match(r"^\(\d+\)\s*whatsapp", title):
-        return True
-    return False
-
-
-def _is_desktop_whatsapp_candidate(info: dict, pids: set) -> bool:
-    if info["w"] < 400 or info["h"] < 300:
-        return False
-    if _is_browser_whatsapp(info):
-        return False
-    title = (info.get("title") or "").lower()
-    cls = info.get("class") or ""
-    if info["pid"] in pids and cls == "WinUIDesktopWin32WindowClass":
-        return True
-    if info["pid"] in pids and "whatsapp" in title:
-        return True
-    if cls == "WinUIDesktopWin32WindowClass" and "whatsapp" in title:
-        return True
-    if title == "whatsapp" or title.startswith("whatsapp "):
-        return True
-    return False
+    return pids_matching("WhatsApp")
 
 
 def _find_desktop_whatsapp() -> dict | None:
-    pids = _whatsapp_pids()
-    found = []
-
-    def _cb(hwnd, _lparam):
-        try:
-            info = _window_info(hwnd)
-            if _is_desktop_whatsapp_candidate(info, pids):
-                found.append(info)
-        except Exception:
-            pass
-        return True
-
-    _user32.EnumWindows(_WNDENUMPROC(_cb), 0)
-    if not found:
+    if not _whatsapp_pids() and not is_app_running("WhatsApp"):
         return None
+    bounds = window_bounds("WhatsApp")
+    if not bounds:
+        return None
+    return {
+        "title": bounds.get("title") or "WhatsApp",
+        "left": bounds["left"],
+        "top": bounds["top"],
+        "right": bounds["right"],
+        "bottom": bounds["bottom"],
+        "w": bounds["width"],
+        "h": bounds["height"],
+        "visible": True,
+    }
 
-    def _score(info):
-        score = info["w"] * info["h"]
-        if info["class"] == "WinUIDesktopWin32WindowClass":
-            score += 10_000_000
-        if info["pid"] in pids:
-            score += 5_000_000
-        if info["visible"]:
-            score += 1_000
-        return score
 
-    return max(found, key=_score)
+def _focus_whatsapp_window() -> bool:
+    ok, _ = focus_application("WhatsApp")
+    time.sleep(0.2)
+    return ok
 
 
-def _focus_hwnd(hwnd: int) -> bool:
-    if _user32.GetForegroundWindow() == hwnd and not _user32.IsIconic(hwnd):
-        return True
-    if _user32.IsIconic(hwnd):
-        _user32.ShowWindow(hwnd, _SW_RESTORE)
-    else:
-        _user32.ShowWindow(hwnd, _SW_SHOW)
-    _user32.BringWindowToTop(hwnd)
-    if _user32.SetForegroundWindow(hwnd):
-        time.sleep(0.25)
-        return True
-    # Last resort only: attach input. Do not tap Alt — that steals the composer.
-    fg = _user32.GetForegroundWindow()
-    fg_tid = _user32.GetWindowThreadProcessId(fg, None)
-    cur_tid = _kernel32.GetCurrentThreadId()
-    attached = False
-    if fg_tid and fg_tid != cur_tid:
-        attached = bool(_user32.AttachThreadInput(cur_tid, fg_tid, True))
-    _user32.BringWindowToTop(hwnd)
-    _user32.SetForegroundWindow(hwnd)
-    if attached:
-        _user32.AttachThreadInput(cur_tid, fg_tid, False)
-    time.sleep(0.25)
-    return True
+def _screen_size():
+    try:
+        size = mcp_gui.gui_screen_size()
+        return int(size["width"]), int(size["height"])
+    except Exception:
+        return 1440, 900
+
+
+def _fallback_screen_info() -> dict:
+    sw, sh = _screen_size()
+    return {
+        "title": "WhatsApp",
+        "left": 0,
+        "top": 28,
+        "right": sw,
+        "bottom": sh,
+        "w": sw,
+        "h": sh - 28,
+        "visible": True,
+    }
 
 
 def _wait_for_whatsapp_window(timeout: float = 25.0, focus: bool = True) -> dict:
     deadline = time.time() + timeout
+    pid_since: float | None = None
     while time.time() < deadline:
-        info = _find_desktop_whatsapp()
-        if info:
-            if focus:
-                _focus_hwnd(info["hwnd"])
-                info = _window_info(info["hwnd"])
-            if info["w"] >= 400 and info["h"] >= 300:
-                print(
-                    f"[WhatsApp] Ready: title={info['title']!r} "
-                    f"class={info['class']!r} {info['w']}x{info['h']}"
-                )
+        if focus:
+            _focus_whatsapp_window()
+        running = bool(_whatsapp_pids() or is_app_running("WhatsApp"))
+        if running:
+            if pid_since is None:
+                pid_since = time.time()
+            info = _find_desktop_whatsapp()
+            if info and info["w"] >= 400 and info["h"] >= 300:
+                print(f"[WhatsApp] Ready: title={info['title']!r} {info['w']}x{info['h']}")
                 return info
-        time.sleep(0.4)
+            if time.time() - pid_since >= 1.2:
+                print("[WhatsApp] App is running; continuing without Accessibility window bounds.")
+                return _fallback_screen_info()
+        time.sleep(0.35)
+    if _whatsapp_pids() or is_app_running("WhatsApp"):
+        return _fallback_screen_info()
     raise RuntimeError("WhatsApp Desktop did not finish loading.")
 
 
 def open_whatsapp():
-    """Open WhatsApp Desktop, or focus it if it is already running."""
-    _ensure_dpi_aware()
-    if _whatsapp_pids():
-        info = _find_desktop_whatsapp()
-        if info:
-            _focus_hwnd(info["hwnd"])
-            return True, "WhatsApp is already open, sir."
-    try:
-        os.startfile("whatsapp:")
+    """Open WhatsApp.app, or focus it if it is already running."""
+    if _whatsapp_pids() or is_app_running("WhatsApp"):
+        _focus_whatsapp_window()
+        return True, "WhatsApp is already open, sir."
+    ok, msg = open_application("WhatsApp")
+    if ok:
         return True, "Successfully opened WhatsApp."
-    except Exception:
-        pass
-    try:
-        subprocess.Popen(
-            "powershell -Command \"Start-Process 'explorer.exe' "
-            "'shell:AppsFolder\\\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App'\"",
-            shell=True,
-        )
-        return True, "Successfully opened WhatsApp UWP."
-    except Exception as e:
-        return False, f"Failed to open WhatsApp: {str(e)}"
-
-
-def _focus_whatsapp_window():
-    """Find and focus the Desktop WhatsApp window. Returns True if focused."""
-    try:
-        info = _find_desktop_whatsapp()
-        if not info:
-            return False
-        _focus_hwnd(info["hwnd"])
-        print(f"[WhatsApp] Focused window: '{info['title']}'")
-        return True
-    except Exception as e:
-        print(f"[WhatsApp] Could not focus WhatsApp window: {e}")
-        return False
+    if open_uri("whatsapp://"):
+        return True, "Successfully opened WhatsApp."
+    return False, msg
 
 
 def _focus_browser_window():
-    """Focus a browser window that might host WhatsApp Web. Unused by Desktop send."""
-    for title_pattern in [".*WhatsApp.*Web.*", ".*Chrome.*", ".*Edge.*", ".*Arc.*", ".*Firefox.*"]:
-        try:
-            app = Application(backend="uia").connect(title_re=title_pattern, timeout=3)
-            win = app.top_window()
-            win.set_focus()
-            time.sleep(0.3)
-            print(f"[WhatsApp] Focused browser: '{win.window_text()}'")
+    """Focus a browser that might host WhatsApp Web."""
+    for app in ("Google Chrome", "Arc", "Safari", "Firefox", "Microsoft Edge"):
+        ok, _ = focus_application(app)
+        if ok:
+            print(f"[WhatsApp] Focused browser: {app}")
             return True
-        except Exception:
-            continue
     print("[WhatsApp] Could not focus any browser window")
     return False
 
@@ -490,85 +372,125 @@ def resolve_whatsapp_number(name_or_number: str, number: str = "") -> tuple:
     )
 
 
+def _digits(value: str) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
+def _is_sathish_target(name_or_number: str = "", number: str = "", phone: str = "", label: str = "") -> bool:
+    digits = _digits(phone) or _digits(number) or _digits(name_or_number)
+    if digits and digits.endswith(SATHISH_PHONE_TAIL):
+        return True
+    names = " ".join([name_or_number, label]).lower()
+    return any(token in SATHISH_NAMES for token in re.findall(r"[a-z]+", names))
+
+
+def _refuse_non_sathish(name_or_number: str, number: str, phone: str, label: str) -> str | None:
+    if _is_sathish_target(name_or_number, number, phone, label):
+        return None
+    return (
+        "WhatsApp is frozen to Sathish only. I will not open anyone else's chat, "
+        "and nothing was sent."
+    )
+
+
 def _clipboard_get() -> str:
-    if not HAS_CLIPBOARD:
-        return ""
     try:
-        return pyperclip.paste() or ""
+        return get_clipboard() or ""
     except Exception:
         return ""
 
 
 def _clipboard_set(text: str):
-    if not HAS_CLIPBOARD:
-        return
     try:
-        pyperclip.copy(text)
+        set_clipboard(text)
     except Exception:
         pass
 
 
 def _paste_text(text: str):
-    """Paste via clipboard — reliable for +phone numbers and special chars."""
-    if HAS_CLIPBOARD:
-        try:
-            pyperclip.copy(text)
-            time.sleep(0.15)
-            pyautogui.hotkey("ctrl", "v")
-            return
-        except Exception as e:
-            print(f"[WhatsApp] Clipboard paste failed, typing instead: {e}")
-    for ch in text:
-        if ch == "+":
-            pyautogui.hotkey("shift", "=")
-        else:
-            pyautogui.write(ch, interval=0.03)
-        time.sleep(0.02)
-
-
-def _open_chat_by_protocol(digits: str):
-    uri = f"whatsapp://send?phone={digits}"
-    print(f"[WhatsApp] Opening chat via {uri}")
-    try:
-        os.startfile(uri)
+    """Paste via MCP clipboard + Command-V. Fallback is character typing."""
+    _clipboard_set(text)
+    time.sleep(0.12)
+    if keystroke_in_app("WhatsApp", "v", command=True):
         return
-    except Exception as exc:
-        print(f"[WhatsApp] os.startfile protocol failed: {exc}")
-    subprocess.Popen(f'start "" "{uri}"', shell=True)
+    try:
+        mcp_gui.gui_hotkey([MOD_KEY, "v"])
+        return
+    except Exception as e:
+        print(f"[WhatsApp] Clipboard paste failed, typing instead: {e}")
+    mcp_gui.gui_type(text, interval=0.03)
 
 
-def _composer_point():
-    """Message box sits just above the taskbar in the chat pane."""
-    sw, sh = pyautogui.size()
-    return int(sw * 0.50), int(sh - 88)
+def _open_chat_by_protocol(digits: str, message: str = ""):
+    """
+    Open a WhatsApp chat. If message is set, WhatsApp fills the composer.
+    This does not send. Keyboard injection is not used.
+    """
+    from executor.sys_platform import run_open
+
+    encoded = urllib.parse.quote(message) if message else ""
+    uris = [
+        f"whatsapp://send?phone={digits}" + (f"&text={encoded}" if encoded else ""),
+        f"https://wa.me/{digits}" + (f"?text={encoded}" if encoded else ""),
+    ]
+    print(
+        f"[WhatsApp] Opening Sathish chat via URL (text={'yes' if message else 'no'}, send=no)"
+    )
+    first = uris[0]
+    result = run_open("-a", "WhatsApp", first)
+    if result.returncode != 0:
+        open_uri(first)
+    return first
 
 
-def _send_point():
-    sw, sh = pyautogui.size()
-    return int(sw - 58), int(sh - 88)
+def _composer_rect(info: dict | None = None) -> tuple[int, int, int, int]:
+    """Composer band inside the WhatsApp window (not the full screen)."""
+    info = info or _find_desktop_whatsapp() or {}
+    left = int(info.get("left", 0) + max(180, info.get("w", 900) * 0.32))
+    width = int(max(240, info.get("w", 900) * 0.64))
+    height = 72
+    top = int(info.get("bottom", _screen_size()[1]) - height - 12)
+    return left, top, width, height
+
+
+def _composer_point(info: dict | None = None):
+    left, top, width, height = _composer_rect(info)
+    return int(left + width * 0.45), int(top + height * 0.55)
+
+
+def _send_point(info: dict | None = None):
+    info = info or _find_desktop_whatsapp() or {}
+    return int(info.get("right", _screen_size()[0]) - 28), int(info.get("bottom", _screen_size()[1]) - 36)
 
 
 def _click_composer(info: dict = None):
-    x, y = _composer_point()
+    x, y = _composer_point(info)
     print(f"[WhatsApp] Clicking composer at ({x}, {y})")
-    pyautogui.click(x, y)
+    mcp_gui.gui_click(x, y)
     time.sleep(0.25)
 
 
 def _click_send_button(info: dict = None):
-    x, y = _send_point()
+    if WHATSAPP_SEND_FROZEN:
+        print("[WhatsApp] SEND FROZEN — not clicking send.")
+        return
+    x, y = _send_point(info)
     print(f"[WhatsApp] Clicking send at ({x}, {y})")
-    pyautogui.click(x, y)
+    mcp_gui.gui_click(x, y)
     time.sleep(0.25)
 
 
-def _composer_band_image():
-    sw, sh = pyautogui.size()
-    left = int(sw * 0.28)
-    top = int(sh - 130)
-    width = int(sw * 0.71)
-    height = 80
-    return pyautogui.screenshot(region=(left, top, width, height))
+def _composer_band_image(info: dict | None = None):
+    left, top, width, height = _composer_rect(info)
+    try:
+        import base64 as _b64
+        import io as _io
+        from PIL import Image
+        payload = mcp_gui.gui_screenshot_region(left, top, width, height)
+        return Image.open(_io.BytesIO(_b64.b64decode(payload)))
+    except Exception as exc:
+        print(f"[WhatsApp] Composer screenshot skipped: {exc}")
+        return None
 
 
 def _images_differ(before, after, threshold: float = 1.8) -> bool:
@@ -581,19 +503,21 @@ def _images_differ(before, after, threshold: float = 1.8) -> bool:
 
 
 def _clear_and_type(message: str):
-    pyautogui.hotkey("ctrl", "a")
+    keystroke_in_app("WhatsApp", "a", command=True)
     time.sleep(0.08)
-    pyautogui.press("backspace")
+    mcp_gui.gui_press("backspace")
     time.sleep(0.12)
     _paste_text(message)
     time.sleep(0.35)
 
 
-def _type_into_composer(message: str, empty_band, click_first: bool = False):
+def _type_into_composer(message: str, empty_band, click_first: bool = False, info: dict | None = None):
     if click_first:
-        _click_composer()
+        _click_composer(info)
     _clear_and_type(message)
-    typed_band = _composer_band_image()
+    typed_band = _composer_band_image(info)
+    if empty_band is None or typed_band is None:
+        return True, typed_band
     if _images_differ(empty_band, typed_band):
         return True, typed_band
     print("[WhatsApp] Composer pixels did not change after typing")
@@ -603,36 +527,65 @@ def _type_into_composer(message: str, empty_band, click_first: bool = False):
 def _search_chat_by_number(phone: str):
     """In-app number search if the protocol did not land in the chat composer."""
     print(f"[WhatsApp] Searching in-app for {phone}")
-    pyautogui.hotkey("ctrl", "f")
+    _focus_whatsapp_window()
+    if not keystroke_in_app("WhatsApp", "n", command=True):
+        mcp_gui.gui_hotkey([MOD_KEY, "n"])
     time.sleep(0.6)
-    pyautogui.hotkey("ctrl", "a")
-    pyautogui.press("backspace")
     _paste_text(phone)
-    time.sleep(1.3)
-    pyautogui.press("enter")
-    time.sleep(0.8)
-    pyautogui.press("escape")
-    time.sleep(0.35)
+    time.sleep(1.1)
+    mcp_gui.gui_press("enter")
+    time.sleep(0.7)
+    mcp_gui.gui_press("escape")
+    time.sleep(0.3)
 
 
-def prepare_whatsapp_message(name_or_number: str, message: str = "", number: str = ""):
+def _press_whatsapp_send() -> bool:
+    if WHATSAPP_SEND_FROZEN:
+        print("[WhatsApp] SEND FROZEN — not pressing Return.")
+        return False
+    if keystroke_in_app("WhatsApp", "return"):
+        return True
+    mcp_gui.gui_press("enter")
+    return True
+
+
+def _send_via_whatsapp_web(phone: str, label: str, message: str) -> tuple[bool, str]:
+    """Keep WhatsApp Web sending behind the dedicated confirmation flow."""
+    return False, "WhatsApp Web sending is disabled; use the confirmation-gated WhatsApp tool."
+
+
+def prepare_whatsapp_message(
+    name_or_number: str,
+    message: str = "",
+    number: str = "",
+    *,
+    send: bool = False,
+):
     """
-    Open WhatsApp, wait until it loads, open the saved contact's chat,
-    clear the message box, type the message, and send it.
+    Open WhatsApp.app, open the allowed chat, and type a draft.
+    Sending is disabled by default and reserved for explicit confirmation.
+    Only Sathish's number is allowed.
     """
-    _ensure_dpi_aware()
     ok, phone, label, err = resolve_whatsapp_number(name_or_number, number)
     if not ok:
         return False, err
 
-    digits = re.sub(r"\D", "", phone)
+    refused = _refuse_non_sathish(name_or_number, number, phone, label)
+    if refused:
+        print(f"[WhatsApp] Blocked non-Sathish target label={label!r} phone={phone!r}")
+        return False, refused
+
+    digits = _digits(phone)
+    if not digits.endswith(SATHISH_PHONE_TAIL):
+        return False, "WhatsApp is frozen to Sathish only. Nothing was sent."
+
     msg_text = (message or "").strip()
-    print(f"[WhatsApp] Target: {label} ({digits}), Message: '{msg_text}'")
+    print(f"[WhatsApp] Target: Sathish ({digits}), draft: '{msg_text}' send_frozen={WHATSAPP_SEND_FROZEN}")
 
     try:
         launched = False
-        if not _whatsapp_pids():
-            print("[WhatsApp] Opening Desktop app...")
+        if not _whatsapp_pids() and not is_app_running("WhatsApp"):
+            print("[WhatsApp] Opening macOS WhatsApp.app...")
             opened, open_msg = open_whatsapp()
             if not opened:
                 return False, open_msg
@@ -640,77 +593,71 @@ def prepare_whatsapp_message(name_or_number: str, message: str = "", number: str
         else:
             print("[WhatsApp] Desktop app already running.")
 
-        print("[WhatsApp] Waiting until WhatsApp has loaded...")
-        print(f"[WhatsApp] Screen size for clicks: {pyautogui.size()}")
-        _wait_for_whatsapp_window(timeout=30.0 if launched else 10.0, focus=True)
+        print("[WhatsApp] Waiting for WhatsApp.app...")
+        deadline = time.time() + (20.0 if launched else 6.0)
+        while time.time() < deadline:
+            if _whatsapp_pids():
+                break
+            time.sleep(0.3)
+        _focus_whatsapp_window()
+        time.sleep(0.8)
 
-        print(f"[WhatsApp] Loading chat for {label}...")
-        _open_chat_by_protocol(digits)
-        time.sleep(3.8 if launched else 3.0)
-        # Do not Alt-focus after the protocol: it already focuses the composer.
-        info = _wait_for_whatsapp_window(timeout=12.0, focus=False)
-        time.sleep(0.4)
+        print("[WhatsApp] Opening Sathish chat with draft in the box (no send)...")
+        _open_chat_by_protocol(digits, msg_text)
+        time.sleep(2.8 if launched else 2.0)
+        _focus_whatsapp_window()
+        time.sleep(0.6)
 
         if not msg_text:
-            return True, f"Opened WhatsApp chat for {label}, sir."
+            return True, "Opened Sathish's WhatsApp chat. Send is frozen, so nothing was typed or sent."
 
-        # Protocol focuses the composer. Do not click first — a DPI-wrong
-        # click steals focus into the taskbar or chat list.
-        print(f"[WhatsApp] Clearing input and typing: '{msg_text}'")
-        empty_band = _composer_band_image()
-        typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=False)
-        if not typed:
-            print("[WhatsApp] Protocol focus missed the box; clicking composer...")
-            typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=True)
-        if not typed:
-            print("[WhatsApp] Chat composer was not ready; searching by number...")
-            _focus_hwnd(info["hwnd"])
-            _search_chat_by_number(digits)
-            info = _wait_for_whatsapp_window(timeout=8.0)
-            _focus_hwnd(info["hwnd"])
-            time.sleep(0.5)
-            empty_band = _composer_band_image()
-            typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=True)
-        if not typed:
-            return False, (
-                "WhatsApp opened and the chat was requested, but the message box "
-                "did not accept the text."
-            )
+        if not send:
+            return True, "Opened Sathish's chat and put the draft in the message box. The message was not sent."
+        if WHATSAPP_SEND_FROZEN:
+            return False, "WhatsApp sending is frozen. The message was not sent."
+        info = _wait_for_whatsapp_window(timeout=8.0, focus=True)
+        empty_band = _composer_band_image(info)
+        typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=False, info=info)
 
-        print("[WhatsApp] Clicking the send button...")
-        _click_send_button()
-        time.sleep(0.8)
-        sent_band = _composer_band_image()
-        if not _images_differ(typed_band, sent_band, threshold=2.5):
-            print("[WhatsApp] Send button did not clear the box; pressing Enter...")
-            pyautogui.press("enter")
-            time.sleep(0.8)
-            sent_band = _composer_band_image()
-        if not _images_differ(typed_band, sent_band, threshold=2.5):
+        print("[WhatsApp] Pressing Return to send...")
+        _press_whatsapp_send()
+        time.sleep(0.7)
+        sent_band = _composer_band_image(info)
+        if not _images_differ(typed_band, sent_band, threshold=2.0):
+            print("[WhatsApp] Return did not clear the box; clicking send...")
+            _click_send_button(info)
+            time.sleep(0.7)
+            sent_band = _composer_band_image(info)
+        if not _images_differ(typed_band, sent_band, threshold=2.0):
             return False, (
                 "WhatsApp send could not be verified: the message box still looks typed."
             )
         return True, "WhatsApp message sent, sir."
     except Exception as e:
         print(f"[WhatsApp] Error: {e}")
-        return False, f"Failed to send WhatsApp message: {str(e)}"
+        return False, f"Failed to open Sathish's WhatsApp chat: {str(e)}"
 
 
 def confirm_send_whatsapp_message():
-    """Retry the last saved WhatsApp request instead of blindly pressing Enter."""
+    """Send only a request that is still pending explicit user confirmation."""
     try:
         from brain.memory import get_memory
         pending = get_memory("pending_whatsapp") or {}
-        last = get_memory("last_whatsapp_request") or {}
-        src = pending if (pending or {}).get("message") else last
+        src = pending if isinstance(pending, dict) else {}
+        if not src.get("awaiting_confirm"):
+            return False, "There is no WhatsApp message waiting for confirmation, sir."
         message = (src or {}).get("message") or ""
+        # Consume this approval before touching WhatsApp. A failed or partial send
+        # must require a fresh request and confirmation before it can be retried.
+        from brain.memory import save_memory
+        save_memory("pending_whatsapp", None)
         if (src or {}).get("all_contacts") and message:
-            return send_whatsapp_to_saved_contacts(message)
+            return send_whatsapp_to_saved_contacts(message, confirmed=True)
         name = (src or {}).get("name") or (src or {}).get("contact") or ""
         number = (src or {}).get("number") or ""
         if not message or not (name or number):
             return False, "There is no WhatsApp message waiting to be sent, sir."
-        return prepare_whatsapp_message(name, message, number)
+        return prepare_whatsapp_message(name, message, number, send=True)
     except Exception as e:
         return False, f"Failed to send WhatsApp message: {str(e)}"
 
@@ -727,15 +674,36 @@ def cancel_whatsapp_draft():
 
 
 def send_whatsapp_message(name, message, number: str = "", auto_send: bool = True):
-    """WhatsApp messaging entrypoint — resolve number, open chat, type and send."""
-    return prepare_whatsapp_message(name, message, number=number)
+    """Open a WhatsApp chat and type a draft; sending requires confirmation."""
+    ok, result = prepare_whatsapp_message(name, message, number=number)
+    if ok and message:
+        request = {"name": name, "number": number, "message": message}
+        from brain.memory import save_memory
+        save_memory("last_whatsapp_request", request)
+        if WHATSAPP_SEND_FROZEN:
+            # Nothing can be sent, so nothing is waiting on a "yes". Arming the
+            # draft would let the next unrelated "ok" be swallowed as a send
+            # approval and answered with a frozen refusal.
+            save_memory("pending_whatsapp", None)
+            result += " WhatsApp sending is currently frozen; nothing was sent."
+        else:
+            save_memory("pending_whatsapp", {**request, "awaiting_confirm": True})
+            result += " Say ‘yes’ to confirm sending, or ‘cancel’ to discard it."
+    return ok, result
 
 
-def send_whatsapp_to_saved_contacts(message: str) -> tuple:
+def send_whatsapp_to_saved_contacts(message: str, *, confirmed: bool = False) -> tuple:
     """
     Send one message to every WhatsApp-allowed saved individual.
-    Never uses the open chat, never groups, never unsaved numbers.
+    Frozen: refused, because it would message people other than Sathish.
     """
+    if not confirmed:
+        return False, "Sending to saved contacts requires an explicit confirmation. Nothing was sent."
+    if WHATSAPP_SEND_FROZEN:
+        return False, (
+            "WhatsApp send is frozen and locked to Sathish only. "
+            "I will not message all contacts."
+        )
     msg = (message or "").strip()
     if not msg:
         return False, "I need the message text before I send to saved contacts, sir."
@@ -757,7 +725,7 @@ def send_whatsapp_to_saved_contacts(message: str) -> tuple:
     failed = []
     for label, phone in targets:
         print(f"[WhatsApp] All-contacts target {label} ({phone})")
-        ok, result = prepare_whatsapp_message(label, msg, number=phone)
+        ok, result = prepare_whatsapp_message(label, msg, number=phone, send=True)
         if ok:
             sent.append(label)
         else:
@@ -780,7 +748,7 @@ def send_whatsapp_to_saved_contacts(message: str) -> tuple:
 def search_and_summarize_in_notepad(query: str):
     """
     Iteratively searches DuckDuckGo, writes findings directly to a temporary file on the desktop,
-    launches Notepad showing the file on screen, reads the data, summarizes using Groq LLM,
+    launches TextEdit showing the file on screen, summarizes with the local Ollama model,
     closes Notepad, and deletes the temp file safely.
     """
     print(f"[SearchNotepad] Performing first search for '{query}'...")
@@ -805,8 +773,8 @@ def search_and_summarize_in_notepad(query: str):
         f"=== END OF DATA LOG ===\n"
     )
     
-    # Save directly to a text file on the Desktop so Notepad opens it natively
-    desktop = os.path.join(os.environ["USERPROFILE"], "Desktop")
+    # Save directly to a text file on the Desktop so the editor opens it natively
+    desktop = desktop_dir()
     filepath = os.path.join(desktop, "jarvis_research.txt")
     
     try:
@@ -814,9 +782,10 @@ def search_and_summarize_in_notepad(query: str):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(findings)
             
-        # 2. Launch Notepad with the file path natively
-        print("[SearchNotepad] Launching Notepad with pre-populated file...")
-        subprocess.Popen(["notepad.exe", filepath], shell=False)
+        # 2. Launch the platform text editor with the file path natively
+        print("[SearchNotepad] Launching TextEdit with pre-populated file...")
+        from executor.sys_platform import run_open
+        run_open("-a", "TextEdit", filepath)
         
         # 3. Leave it open on screen for 3 seconds for the user to see the high-tech log!
         time.sleep(3.0)
@@ -825,37 +794,33 @@ def search_and_summarize_in_notepad(query: str):
         with open(filepath, "r", encoding="utf-8") as f:
             notepad_content = f.read()
             
-        # 5. Call Groq LLM to summarize the findings
-        import httpx
-        groq_key = settings.GROQ_API_KEY
-        if groq_key:
-            payload = {
-                "model": "llama-3.1-8b-instant",
-                "messages": [
-                    {
-                        "role": "system", 
-                        "content": (
-                            "You are J.A.R.V.I.S. Summarize the provided Notepad research findings "
-                            "elegantly and wittily in 2-3 spoken sentences. Sound helpful and dry. Do not repeat the prompt."
-                        )
-                    },
-                    {"role": "user", "content": notepad_content}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 200
-            }
-            with httpx.Client(timeout=10.0) as client:
-                r = client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {groq_key}"}, json=payload)
-                summary_text = r.json()["choices"][0]["message"]["content"].strip()
-        else:
-            summary_text = f"Here is the collected intelligence: {res1[:150]}..."
+        # 5. Call the local LLM to summarize the findings
+        from brain.llm_provider import complete as llm_complete
+        summary_text = llm_complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are J.A.R.V.I.S. Summarize the provided Notepad research findings "
+                        "elegantly and wittily in 2-3 spoken sentences. Sound helpful and dry. Do not repeat the prompt."
+                    ),
+                },
+                {"role": "user", "content": notepad_content},
+            ],
+            temperature=0.3,
+            max_tokens=200,
+            timeout=15.0,
+        )
             
     except Exception as e:
         print(f"[SearchNotepad] Error during Notepad workflow: {e}")
         summary_text = f"I retrieved the search results, sir, but encountered a minor issue preparing the summary: {e}"
     finally:
-        # 6. Close Notepad cleanly without saving dialogs
-        os.system("taskkill /f /im notepad.exe")
+        # 6. Close the editor cleanly without saving dialogs
+        try:
+            osascript('tell application "TextEdit" to quit')
+        except Exception:
+            kill_named(["TextEdit"])
         
         # 7. Delete the temporary file from the desktop so we don't leave clutter!
         try:
@@ -867,7 +832,7 @@ def search_and_summarize_in_notepad(query: str):
     # Open default browser with Google Search so they have the browser search open as requested!
     search_google(query)
     
-    return True, f"I have run an iterative search, logged it in Notepad, and closed Notepad as requested. Here is the summary, sir: {summary_text}"
+    return True, f"I have run an iterative search, logged it in TextEdit, and closed TextEdit as requested. Here is the summary, sir: {summary_text}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EXISTING SYSTEM AUTOMATIONS
@@ -914,7 +879,7 @@ def read_news_headlines(query: str):
     except Exception as e:
         import urllib.parse
         encoded = urllib.parse.quote_plus(query + " news")
-        webbrowser.open(f"https://news.google.com/search?q={encoded}&hl=en-US&gl=US&ceid=US:en")
+        open_url(f"https://news.google.com/search?q={encoded}&hl=en-US&gl=US&ceid=US:en")
         return True, "Opening latest news for you."
 
 def play_youtube(song):
@@ -924,7 +889,7 @@ def play_youtube(song):
     try:
         query = urllib.parse.quote_plus(song)
         url = f"https://www.youtube.com/results?search_query={query}"
-        webbrowser.open(url)
+        open_url(url)
         return True, f"Opened YouTube search for {song}."
     except Exception as e:
         return False, f"Failed to open YouTube: {str(e)}"
@@ -936,7 +901,7 @@ def search_google(query):
     try:
         encoded_query = urllib.parse.quote_plus(query)
         url = f"https://www.google.com/search?q={encoded_query}"
-        webbrowser.open(url)
+        open_url(url)
         return True, f"Opened Google search for: {query}"
     except Exception as e:
         return False, f"Failed to open Google search: {str(e)}"
@@ -946,7 +911,7 @@ def smart_search(query: str):
     Robust 3-tier search:
       1. DuckDuckGo Instant Answer API
       2. DuckDuckGo HTML regex scraping
-      3. Direct Groq LLM knowledge answer (always works)
+      3. Local Ollama answer when fetch returns no useful snippets
     """
     import httpx
     import re
@@ -956,7 +921,7 @@ def smart_search(query: str):
         return False, "Empty search query."
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
     }
 
     # ── Tier 1: DDG Instant Answer API ──────────────────────────────────────
@@ -1011,37 +976,30 @@ def smart_search(query: str):
     except Exception as ex:
         print(f"[SmartSearch] DDG HTML scrape failed: {ex}")
 
-    # ── Tier 3: Direct Groq LLM answer ──────────────────────────────────────
-    groq_key = settings.GROQ_API_KEY
-    if not groq_key:
-        return False, "I wasn't able to find an answer right now, sir."
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are J.A.R.V.I.S. Answer the user's question concisely in 2-4 sentences. "
-                    "No bullet points. No markdown. Sound like an intelligent assistant."
-                ),
-            },
-            {"role": "user", "content": query},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 220,
-    }
+    # ── Tier 3: Direct LLM answer ───────────────────────────────────────────
+    from brain.llm_provider import complete as llm_complete
+
     try:
-        with httpx.Client(timeout=12.0) as client:
-            r = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json=payload,
-            )
-            r.raise_for_status()
-            answer = r.json()["choices"][0]["message"]["content"].strip()
-            return True, answer
+        answer = llm_complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are J.A.R.V.I.S. Answer the user's question concisely in 2-4 sentences. "
+                        "No bullet points. No markdown. Sound like an intelligent assistant."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            temperature=0.3,
+            max_tokens=220,
+            timeout=20.0,
+        )
+        if not answer:
+            raise ValueError("empty completion")
+        return True, answer
     except Exception as exc:
-        print(f"[SmartSearch] Groq fallback error: {exc}")
+        print(f"[SmartSearch] LLM fallback error: {exc}")
         return False, "I wasn't able to fetch an answer right now, sir."
 
 def play_yt_music(song):
@@ -1062,11 +1020,11 @@ def play_yt_music(song):
         if vid_ids:
             first_vid = vid_ids[0]
             music_url = f"https://music.youtube.com/watch?v={first_vid}"
-            webbrowser.open(music_url)
+            open_url(music_url)
             return True, f"Started playing {song} on YouTube Music."
         else:
             music_url = f"https://music.youtube.com/search?q={query}"
-            webbrowser.open(music_url)
+            open_url(music_url)
             return True, f"Opened YouTube Music search for {song}."
     except Exception as e:
         return False, f"Failed to play on YouTube Music: {str(e)}"

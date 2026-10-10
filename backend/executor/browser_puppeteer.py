@@ -13,7 +13,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from executor.puppeteer_client import command, tool_result
+from executor.puppeteer_client import tool_result
+from mcp_clients import browser as mcp_browser
+
+
+def command(action: str, timeout: float = 120.0, **params: Any) -> dict:
+    """Preserve the high-level helper API while crossing the browser MCP boundary."""
+    return mcp_browser.command(action, params, timeout=timeout)
 
 
 def browser_action(params: dict | None = None) -> tuple[bool, str]:

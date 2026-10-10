@@ -1,0 +1,50 @@
+{
+  "name": "jarvis",
+  "version": "0.1.0",
+  "private": true,
+  "main": "electron-main.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "desktop": "electron .",
+    "package-desktop": "node package-desktop.js",
+    "jarvis": "bash ./scripts/jarvis-launcher.sh",
+    "jarvis:start": "bash ./scripts/jarvis-launcher.sh --start",
+    "jarvis:stop": "bash ./scripts/jarvis-launcher.sh --stop",
+    "launch": "bash ./scripts/jarvis-launcher.sh"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.4.0",
+    "@elevenlabs/react": "^1.1.1",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "@types/three": "^0.184.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.2.0",
+    "lucide-react": "^1.8.0",
+    "motion": "^12.38.0",
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "streamdown": "^2.5.0",
+    "tailwindcss-animate": "^1.0.7",
+    "three": "^0.184.0",
+    "use-stick-to-bottom": "^1.1.4"
+  },
+  "devDependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.43.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "electron": "^42.2.0",
+    "electron-packager": "^17.1.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

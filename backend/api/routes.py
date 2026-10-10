@@ -9,6 +9,8 @@ import json
 import subprocess
 import io
 import wave
+import time
+import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
@@ -40,6 +42,10 @@ def _decode_upload_to_pcm(audio_bytes: bytes) -> bytes:
         except wave.Error:
             pass
 
+    # AUDITED BOUNDARY (MCP brief): ffmpeg here decodes uploaded audio
+    # bytes over an in-process stdin/stdout pipe — a data pipeline, not an OS action.
+    # Screen capture and OS actions (shell, AppleScript,
+    # GUI) go through mcp_clients instead.
     result = subprocess.run(
         [
             "ffmpeg",
@@ -72,6 +78,78 @@ def _decode_upload_to_pcm(audio_bytes: bytes) -> bytes:
 @router.get("/health")
 async def health():
     return {"status": "online"}
+
+
+# ── Ollama Lifecycle & Model Discovery ───────────────────────────────────────
+@router.get("/models")
+async def list_models_endpoint():
+    """Return all locally installed Ollama models."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get("http://localhost:11434/api/tags")
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [m.get("name") or m.get("model") for m in data.get("models", []) if m.get("name") or m.get("model")]
+                return {"online": True, "models": models}
+    except Exception:
+        pass
+    return {"online": False, "models": []}
+
+
+@router.get("/ollama/status")
+async def ollama_status_endpoint():
+    """Check if local Ollama daemon is active and responsive."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get("http://localhost:11434/api/tags")
+            if resp.status_code == 200:
+                return {"online": True}
+    except Exception:
+        pass
+    return {"online": False}
+
+
+@router.post("/ollama/start")
+async def start_ollama_endpoint():
+    """Attempt to start the local Ollama daemon if not already running."""
+    import shutil
+    import subprocess
+    import asyncio
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            resp = await client.get("http://localhost:11434/api/tags")
+            if resp.status_code == 200:
+                return {"status": "already_running", "online": True}
+    except Exception:
+        pass
+
+    bin_path = (
+        shutil.which("ollama")
+        or (os.path.exists("/usr/local/bin/ollama") and "/usr/local/bin/ollama")
+        or (os.path.exists("/opt/homebrew/bin/ollama") and "/opt/homebrew/bin/ollama")
+    )
+    if bin_path:
+        subprocess.Popen([bin_path, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    elif os.path.exists("/Applications/Ollama.app"):
+        subprocess.Popen(["open", "-a", "Ollama"])
+    else:
+        return {"status": "not_installed", "online": False}
+
+    for _ in range(12):
+        await asyncio.sleep(0.5)
+        try:
+            async with httpx.AsyncClient(timeout=1.0) as client:
+                resp = await client.get("http://localhost:11434/api/tags")
+                if resp.status_code == 200:
+                    return {"status": "started", "online": True}
+        except Exception:
+            continue
+
+    return {"status": "starting", "online": False}
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────
@@ -131,11 +209,29 @@ async def stop_trigger():
     from tts.hybrid_tts import force_stop_all_tts
     force_stop_all_tts()
 
+    try:
+        from executor.web_agent import request_stop
+        request_stop()
+    except Exception:
+        pass
+
     flags.stop_event.set()
     print("[Backend] Stop trigger received.")
     await set_state(SystemState.IDLE)
     await event_bus.emit(BusEvent(EventType.STOP))
     return {"status": "stopping"}
+
+
+@router.post("/speak")
+async def speak_endpoint(request: dict):
+    text = str(request.get("text") or "").strip()
+    if not text:
+        return {"status": "empty"}
+    from tts.hybrid_tts import speak_hybrid
+    asyncio.create_task(
+        speak_hybrid(text, is_smart=False, response_id=f"read_aloud_{int(time.time()*1000)}")
+    )
+    return {"status": "speaking"}
 
 
 # ── File Upload STT ─────────────────────────────────────────────────────────
@@ -190,7 +286,40 @@ async def websocket_endpoint(websocket: WebSocket):
             if event_type == "command":
                 text = data.get("text", "")
                 voice = data.get("voice", False)
-                await event_bus.emit(BusEvent(EventType.COMMAND, {"text": text, "voice": voice}))
+                if data.get("stream"):
+                    request_id = str(data.get("id") or "")
+                    try:
+                        async for frame in process_command_with_timeout(
+                            text, request_id or None, voice=voice
+                        ):
+                            if isinstance(frame, bytes):
+                                frame = frame.decode("utf-8", errors="replace")
+                            for line in str(frame).splitlines():
+                                if not line.startswith("data: "):
+                                    continue
+                                try:
+                                    payload = json.loads(line[6:])
+                                except json.JSONDecodeError:
+                                    continue
+                                # Computer-use snapshots are already delivered through
+                                # the shared event broadcast. Avoid sending large images
+                                # a second time over the command-response socket.
+                                if payload.get("type") == "computer_use":
+                                    continue
+                                await websocket.send_json({
+                                    "type": "chat_stream",
+                                    "id": request_id,
+                                    **payload,
+                                })
+                    except Exception as exc:
+                        await websocket.send_json({
+                            "type": "chat_stream",
+                            "id": request_id,
+                            "error": str(exc),
+                            "done": True,
+                        })
+                else:
+                    await event_bus.emit(BusEvent(EventType.COMMAND, {"text": text, "voice": voice}))
 
             elif event_type == "wake":
                 flags.continuous_voice_mode = True
@@ -210,6 +339,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     force_stop_all_tts()
                 except Exception as exc:
                     print(f"[WS Stop] Error stopping TTS: {exc}")
+                try:
+                    from executor.web_agent import request_stop
+                    request_stop()
+                except Exception:
+                    pass
                 flags.stop_event.set()
                 await set_state(SystemState.IDLE)
                 await event_bus.emit(BusEvent(EventType.STOP))
@@ -287,15 +421,10 @@ async def reset_endpoint():
         print(f"[Reset] Error clearing memory: {exc}")
 
     try:
-        for exe in ("WhatsApp.exe", "WhatsApp.Root.exe"):
-            subprocess.run(
-                ["taskkill", "/f", "/im", exe],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        from executor.sys_platform import kill_named
+        kill_named(["WhatsApp"])
     except Exception as exc:
-        print(f"[Reset] WhatsApp taskkill error: {exc}")
+        print(f"[Reset] WhatsApp stop error: {exc}")
 
     await manager.broadcast_json({"type": "reset_complete", "state": "idle"})
     print(f"[Backend] Reset complete — stopped {task_count} background tasks")
@@ -316,7 +445,7 @@ async def agent_run_endpoint(request: dict):
             task=task,
             broadcast_fn=manager.broadcast_json,
             max_steps=15,
-            use_vision=True,
+            use_vision=False,
         ):
             yield chunk
 

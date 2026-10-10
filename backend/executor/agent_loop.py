@@ -8,6 +8,10 @@ import asyncio
 import time
 from executor.task_manager import task_manager
 
+_SAFE_AUTO_RETRY_INTENTS = frozenset({
+    "search_files", "recall", "list_tasks", "calculate",
+})
+
 
 class AgentLoop:
     def __init__(self):
@@ -52,6 +56,9 @@ class AgentLoop:
                 # Re-create the tool call from the registry at retry time
                 intent = meta.get("name", "")
                 params = meta.get("params", {})
+                if intent not in _SAFE_AUTO_RETRY_INTENTS:
+                    print(f"[AgentLoop] Automatic retry blocked for {intent}.")
+                    continue
                 try:
                     from executor.tools_registry import get_tool
                     tool_func = get_tool(intent)
@@ -78,9 +85,13 @@ class AgentLoop:
                     pass
 
     def add_to_retry_queue(self, metadata: dict):
-        """Adds a failed task to the retry queue using metadata only."""
+        """Queue only idempotent local reads/calculations for background retry."""
+        intent = str((metadata or {}).get("name") or "")
+        if intent not in _SAFE_AUTO_RETRY_INTENTS:
+            print(f"[AgentLoop] Automatic retry blocked for {intent}.")
+            return False
         self.retry_queue.append(("retry_" + str(int(time.time())), 0, metadata))
+        return True
 
 # Global instance
 agent_loop = AgentLoop()
-
