@@ -7,7 +7,7 @@ _lock = threading.Lock()
 
 DEFAULTS = {
     "muted": False,
-    "chromeProfileEmail": "user@example.com",
+    "chromeProfileEmail": os.environ.get("CHROME_GOOGLE_EMAIL", ""),
     "autoWake": True,
     "realTimeFeedback": True,
     "volume": 80,

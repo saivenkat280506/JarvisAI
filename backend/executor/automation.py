@@ -135,7 +135,7 @@ def open_browser(manual_path=None):
 
 _CONTACTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_contacts.json")
 WHATSAPP_SEND_FROZEN = True
-SATHISH_PHONE_TAIL = "9876543210"
+SATHISH_PHONE_TAIL = os.environ.get("SATHISH_PHONE_TAIL", "")
 SATHISH_NAMES = {"sathish", "satish"}
 
 

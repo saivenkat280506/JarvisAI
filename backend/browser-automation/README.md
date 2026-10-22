@@ -2,7 +2,7 @@
 
 Advanced browser control for JARVIS: click, type, scroll, YouTube, Spotify, and web search.
 
-JARVIS keeps an isolated local copy of the selected Chrome profile so browser automation can use its signed-in session without taking over daily Chrome. Choose `user@example.com` or `svtech06@gmail.com` in JARVIS Settings.
+JARVIS keeps an isolated local copy of the selected Chrome profile so browser automation can use its signed-in session without taking over daily Chrome. Choose `<your-email>` or `svtech06@gmail.com` in JARVIS Settings.
 
 ## Architecture
 

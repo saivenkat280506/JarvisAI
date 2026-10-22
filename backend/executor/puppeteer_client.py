@@ -77,7 +77,7 @@ def ensure_server(start_if_needed: bool = True) -> bool:
     from executor.sys_platform import chrome_profile_directory_for_email, chrome_user_data
 
     profile_email = str(
-        get_settings().get("chromeProfileEmail") or "user@example.com"
+        get_settings().get("chromeProfileEmail") or os.environ.get("CHROME_GOOGLE_EMAIL", "")
     ).strip().lower()
     profile_dir = chrome_profile_directory_for_email(profile_email)
     if not profile_dir:
