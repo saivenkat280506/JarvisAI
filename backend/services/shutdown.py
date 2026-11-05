@@ -64,6 +64,15 @@ async def shutdown_all_services(reason: str = "app_close") -> dict:
         except Exception as exc:
             print(f"[Shutdown] Web agent stop error: {exc}")
 
+        # Puppeteer is intentionally started on demand, so it is not a child
+        # of uvicorn. Stop its control plane and its JARVIS-owned Chrome
+        # profile explicitly before the backend exits.
+        try:
+            from executor.puppeteer_client import _kill_server
+            _kill_server()
+        except Exception as exc:
+            print(f"[Shutdown] Browser control-plane stop error: {exc}")
+
         # ── Background asyncio tasks ────────────────────────────────────────
         task_count = 0
         try:

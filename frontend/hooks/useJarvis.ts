@@ -34,6 +34,7 @@ export function useJarvis() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [speechTranscript, setSpeechTranscript] = useState("");
+  const [sttStatus, setSttStatus] = useState("standby");
   const [agentState, setAgentState] = useState<AgentState>("idle");
   const [actionLogs, setActionLogs] = useState<ActionLogEntry[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -60,12 +61,14 @@ export function useJarvis() {
     setAgentState("offline");
     setStreamingText("");
     setSpeechTranscript("");
+    setSttStatus("offline");
   }, []);
 
   const resetUiToIdle = useCallback(() => {
     setAgentState("idle");
     setStreamingText("");
     setSpeechTranscript("");
+    setSttStatus("standby");
   }, []);
 
   // Sync UI when HTTP health poll detects backend up/down
@@ -133,8 +136,30 @@ export function useJarvis() {
           pushLog(makeLog("STT", "Wake word detected", "success"));
         }
 
+        if (data.type === "stt_status") {
+          const status = String(data.status || "standby");
+          setSttStatus(status);
+          if (data.detail && status !== "capturing") {
+            pushLog(makeLog("STT", String(data.detail), status === "no_speech" ? "error" : "info"));
+          }
+        }
+
         if (data.type === "system_ready") {
           pushLog(makeLog("System", "All systems online", "success"));
+        }
+
+        if (data.type === "pipeline_stage") {
+          const stage = String(data.stage || "").toLowerCase();
+          const labels: Record<string, string> = {
+            listen: "Listening for the next command",
+            think: "Thinking about the request",
+            act: data.detail || "Acting on the request",
+            respond: "Responding with text and voice",
+          };
+          if (stage === "listen") {
+            setAgentState((current) => current === "idle" ? "idle_listening" : current);
+          }
+          pushLog(makeLog("Pipeline", labels[stage] || stage, stage === "respond" ? "success" : "info"));
         }
 
         if (data.type === "reset_complete") {
@@ -178,6 +203,7 @@ export function useJarvis() {
           };
           setMessages((prev) => [...prev, userMsg]);
           setSpeechTranscript("");
+          setSttStatus("complete");
           pushLog(makeLog("STT", `Finalised: "${data.text}"`, "success"));
         }
 
@@ -416,6 +442,7 @@ export function useJarvis() {
     setMessages([]);
     setStreamingText("");
     setSpeechTranscript("");
+    setSttStatus("standby");
     setAgentState("idle");
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -460,6 +487,7 @@ export function useJarvis() {
     isSpeaking: agentState === "talking",
     streamingText,
     speechTranscript,
+    sttStatus,
     agentState,
     backendStatus,
     backendLatency,

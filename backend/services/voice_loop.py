@@ -26,6 +26,15 @@ async def set_state(new_state: SystemState):
     print(f"[State] {new_state.name}")
 
 
+async def pipeline_stage(stage: str, detail: str = ""):
+    """Expose the live listen → think → act → respond loop to the UI."""
+    await manager.broadcast_json({
+        "type": "pipeline_stage",
+        "stage": stage,
+        "detail": detail,
+    })
+
+
 def get_current_state() -> SystemState:
     return _current_state
 
@@ -139,11 +148,12 @@ async def _wait_until_ready_to_listen():
             )
         )
         if ready:
-            # Brief pause after TTS so the mic does not pick up speaker echo
+            # Short echo guard: enough time for the last buffer to leave the
+            # room, without adding a full second to every voice turn.
             if tts_was_active:
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(0.35)
             return
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.12)
 
 
 # ── Listen + Process Cycle ──────────────────────────────────────────────────
@@ -154,6 +164,7 @@ async def _listen_and_process(command_override: str = "") -> str:
     Returns: "processed", "empty", "blocked", or "terminated".
     """
     from tts.pocket_tts import stop_speech
+    await pipeline_stage("listen", "Waiting for your next command")
     stop_speech()
 
     with flags.state_lock:
@@ -171,20 +182,38 @@ async def _listen_and_process(command_override: str = "") -> str:
     if not command_text:
         await manager.broadcast_json({"type": "wake_word_detected"})
         await set_state(SystemState.LISTENING)
+        await manager.broadcast_json({
+            "type": "stt_status",
+            "status": "capturing",
+            "detail": "Microphone is active — speak clearly or whisper."
+        })
         with flags.state_lock:
             flags.is_listening = True
 
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
         loop = asyncio.get_event_loop()
 
         def partial_cb(partial_text: str, countdown: int = None):
             print(f"[Live STT] {partial_text} (countdown: {countdown})")
             asyncio.run_coroutine_threadsafe(set_state(SystemState.TRANSCRIBING), loop)
+            status = "transcribing" if partial_text else "capturing"
+            detail = "Converting audio to text"
+            if countdown is not None and countdown > 0:
+                status = "finalizing"
+                detail = f"Finalizing transcription in {countdown}"
             asyncio.run_coroutine_threadsafe(
                 manager.broadcast_json({
                     "type": "partial_transcript",
                     "text": partial_text,
                     "countdown": countdown,
+                }),
+                loop,
+            )
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast_json({
+                    "type": "stt_status",
+                    "status": status,
+                    "detail": detail,
                 }),
                 loop,
             )
@@ -201,6 +230,12 @@ async def _listen_and_process(command_override: str = "") -> str:
         finally:
             if paused_music_for_stt:
                 resume_after_listening()
+
+        await manager.broadcast_json({
+            "type": "stt_status",
+            "status": "complete" if command_text.strip() else "no_speech",
+            "detail": "Transcription ready" if command_text.strip() else "No speech detected",
+        })
 
     import time
     now = time.time()
@@ -247,6 +282,7 @@ async def _listen_and_process(command_override: str = "") -> str:
         return "empty"
 
     print(f"[USER]: {command_text}")
+    await pipeline_stage("think", "Understanding the request")
     await set_state(SystemState.PROCESSING)
     await manager.broadcast_json({"type": "user_message", "text": command_text})
 
@@ -338,6 +374,7 @@ async def _handle_text_command(text: str, *, voice: bool = False):
     if not text.strip():
         return
 
+    await pipeline_stage("think", "Understanding the request")
     await set_state(SystemState.PROCESSING)
     await manager.broadcast_json({"type": "user_message", "text": text})
 

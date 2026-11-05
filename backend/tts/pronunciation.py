@@ -43,6 +43,45 @@ def _ordinal_words(value: int) -> str:
 
 def apply_number_pronunciation(text: str) -> str:
     """Convert display numerals into natural spoken words for Pocket TTS."""
+    def decimal_words(raw: str) -> str:
+        whole, fraction = raw.split(".", 1)
+        digits = " ".join(_ONES[int(digit)] for digit in fraction)
+        return f"{_number_words(int(whole))} point {digits}"
+
+    # Percentages and common currency symbols must be handled before the
+    # generic decimal pass below.
+    def amount_words(raw: str) -> str:
+        value = raw.replace(",", "")
+        return decimal_words(value) if "." in value else _number_words(int(value))
+
+    text = re.sub(
+        r"(?P<currency>[$€£₹])\s*(?P<amount>\d+(?:,\d{3})*(?:\.\d+)?)",
+        lambda m: f"{amount_words(m.group('amount'))} " + {
+            "$": "dollars", "€": "euros", "£": "pounds", "₹": "rupees"
+        }[m.group("currency")],
+        text,
+    )
+    text = re.sub(
+        r"\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*%",
+        lambda m: f"{amount_words(m.group(1))} percent",
+        text,
+    )
+
+    # Keep decimal values together. Without this, 4.76 became "four
+    # seventy-six" and news figures sounded like two unrelated numbers.
+    text = re.sub(
+        r"\b\d+(?:,\d{3})*\.\d+\b",
+        lambda m: decimal_words(m.group(0).replace(",", "")),
+        text,
+    )
+
+    # Comma-separated integers are common in news reports.
+    text = re.sub(
+        r"\b\d{1,3}(?:,\d{3})+\b",
+        lambda m: _number_words(int(m.group(0).replace(",", ""))),
+        text,
+    )
+
     # Times: 07:32 PM -> seven thirty-two P M.
     def time_repl(match):
         hour = int(match.group(1))
@@ -60,6 +99,21 @@ def apply_number_pronunciation(text: str) -> str:
         rf"\b({months})\s+(\d{{1,2}}),\s*(\d{{4}})\b",
         lambda m: f"{m.group(1)} {_ordinal_words(int(m.group(2)))}, {_number_words(int(m.group(3)))}",
         text, flags=re.I,
+    )
+
+    # Also handle the formats commonly returned by RSS feeds and system
+    # messages: 24 October 2026 and 2026-10-24.
+    text = re.sub(
+        rf"\b(\d{{1,2}})\s+({months})\s+(\d{{4}})\b",
+        lambda m: f"{m.group(2)} {_ordinal_words(int(m.group(1)))}, {_number_words(int(m.group(3)))}",
+        text, flags=re.I,
+    )
+    month_names = ("January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December")
+    text = re.sub(
+        rf"\b(\d{{4}})[-/](\d{{1,2}})[-/](\d{{1,2}})\b",
+        lambda m: f"{month_names[int(m.group(2)) - 1]} {_ordinal_words(int(m.group(3)))}, {_number_words(int(m.group(1)))}",
+        text,
     )
 
     def integer_repl(match):
@@ -144,6 +198,13 @@ PRONUNCIATION_MAP: dict[str, str] = {
     "ubuntu": "oo-boon-too",
     "debian": "deb-ee-an",
     "archlinux": "ark linux",
+    # Initialisms that Pocket TTS tends to merge into a single word.
+    "php": "P H P",
+    "bbc": "B B C",
+    "nbc": "N B C",
+    "ai": "A I",
+    "api": "A P I",
+    "url": "U R L",
 }
 
 _SORTED_ENTRIES = sorted(PRONUNCIATION_MAP.items(), key=lambda item: len(item[0]), reverse=True)

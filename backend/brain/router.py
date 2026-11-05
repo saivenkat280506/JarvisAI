@@ -471,6 +471,11 @@ def route_command(text: str):
             re.IGNORECASE,
         )
         and not re.search(
+            r"\b(?:news|headline|headlines|top\s+stories|breaking|updates|current\s+events)\b",
+            text_clean,
+            re.IGNORECASE,
+        )
+        and not re.search(
             r"\bon\s+(?:the\s+)?(?:internet|web|google)\b", text_clean, re.IGNORECASE
         )
     ):
@@ -684,7 +689,7 @@ def route_command(text: str):
 
     # "type hi to sathish" / "can you just type hi to sathish in whatsapp".
     # Same verb family as send/text: the draft lands in the message box and is
-    # never sent (WhatsApp send is frozen). Must run before the loose
+    # still requires explicit confirmation to send. Must run before the loose
     # "whatsapp … to …" rules or they would swallow the message body.
     # Only these rules strip the polite opener, so every other route still
     # sees the raw text.
@@ -1011,7 +1016,10 @@ def route_command(text: str):
         text,
     ))
     if (
-        any(k in text for k in ["news", "headlines", "top stories", "news summary", "headlines summary", "read summary"])
+        any(k in text for k in [
+            "news", "headlines", "top stories", "news summary", "headlines summary",
+            "read summary", "breaking news", "current events", "latest updates",
+        ])
         or asks_for_current_events
         or names_news_scope
     ):

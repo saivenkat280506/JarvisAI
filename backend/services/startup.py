@@ -102,7 +102,7 @@ async def _announce_online():
 async def _boot_sequence():
     """Warm the local voice and greet after backend startup."""
     await asyncio.sleep(1.2)
-    await _warm_up_tts()
+    await asyncio.gather(_warm_up_tts(), _warm_up_stt())
     await _announce_online()
 
 
@@ -120,6 +120,16 @@ async def _warm_up_tts():
         await asyncio.to_thread(warm_up_tts)
     except Exception as e:
         print(f"[Startup] Pocket TTS warm-up failed: {e}")
+
+
+async def _warm_up_stt():
+    """Load local Whisper before the first user command pays cold-start cost."""
+    try:
+        from stt.stt import _get_local_model
+        await asyncio.to_thread(_get_local_model)
+        print("[Startup] Local STT warm-up complete.")
+    except Exception as e:
+        print(f"[Startup] Local STT warm-up failed: {e}")
 
 
 def _check_macos_runtime():

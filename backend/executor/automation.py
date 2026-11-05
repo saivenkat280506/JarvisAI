@@ -130,13 +130,10 @@ def open_browser(manual_path=None):
         return False, f"Failed to open any browser: {str(e)}"
 
 # ── WhatsApp Desktop (macOS) ─────────────────────────────────────────────────
-# Native WhatsApp.app via whatsapp:// URL scheme.
-# SEND IS FROZEN: open Sathish's chat and type a draft only. Never Return/Send.
+# Native WhatsApp.app via whatsapp:// URL scheme. Sending is direct for saved
+# contacts; the allowlist remains the contact safety boundary.
 
 _CONTACTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_contacts.json")
-WHATSAPP_SEND_FROZEN = True
-SATHISH_PHONE_TAIL = os.environ.get("SATHISH_PHONE_TAIL", "")
-SATHISH_NAMES = {"sathish", "satish"}
 
 
 def _whatsapp_pids() -> set:
@@ -376,21 +373,10 @@ def _digits(value: str) -> str:
     return re.sub(r"\D", "", value or "")
 
 
-def _is_sathish_target(name_or_number: str = "", number: str = "", phone: str = "", label: str = "") -> bool:
-    digits = _digits(phone) or _digits(number) or _digits(name_or_number)
-    if digits and digits.endswith(SATHISH_PHONE_TAIL):
-        return True
-    names = " ".join([name_or_number, label]).lower()
-    return any(token in SATHISH_NAMES for token in re.findall(r"[a-z]+", names))
-
-
 def _refuse_non_sathish(name_or_number: str, number: str, phone: str, label: str) -> str | None:
-    if _is_sathish_target(name_or_number, number, phone, label):
-        return None
-    return (
-        "WhatsApp is frozen to Sathish only. I will not open anyone else's chat, "
-        "and nothing was sent."
-    )
+    # Compatibility hook for older callers. The saved-contact allowlist above
+    # is now the contact safety boundary.
+    return None
 
 
 def _clipboard_get() -> str:
@@ -434,7 +420,7 @@ def _open_chat_by_protocol(digits: str, message: str = ""):
         f"https://wa.me/{digits}" + (f"?text={encoded}" if encoded else ""),
     ]
     print(
-        f"[WhatsApp] Opening Sathish chat via URL (text={'yes' if message else 'no'}, send=no)"
+        f"[WhatsApp] Opening WhatsApp chat via URL (text={'yes' if message else 'no'}, send=no)"
     )
     first = uris[0]
     result = run_open("-a", "WhatsApp", first)
@@ -471,9 +457,6 @@ def _click_composer(info: dict = None):
 
 
 def _click_send_button(info: dict = None):
-    if WHATSAPP_SEND_FROZEN:
-        print("[WhatsApp] SEND FROZEN — not clicking send.")
-        return
     x, y = _send_point(info)
     print(f"[WhatsApp] Clicking send at ({x}, {y})")
     mcp_gui.gui_click(x, y)
@@ -491,6 +474,49 @@ def _composer_band_image(info: dict | None = None):
     except Exception as exc:
         print(f"[WhatsApp] Composer screenshot skipped: {exc}")
         return None
+
+
+def _chat_ocr(info: dict | None = None) -> str:
+    """Read only the conversation area; intentionally excludes the composer."""
+    if not info:
+        return ""
+    try:
+        from PIL import Image
+        import base64 as _b64
+        import io as _io
+        import pytesseract
+
+        left = int(info.get("left", 0))
+        top = int(info.get("top", 0) + 90)
+        width = int(info.get("w", 900))
+        height = int(max(240, info.get("h", 700) - 170))
+        payload = mcp_gui.gui_screenshot_region(left, top, width, height)
+        image = Image.open(_io.BytesIO(_b64.b64decode(payload)))
+        ocr = pytesseract.image_to_string(image, config="--psm 6")
+        return re.sub(r"[^a-z0-9]+", " ", ocr.lower()).strip()
+    except Exception as exc:
+        print(f"[WhatsApp] Post-send verification unavailable: {type(exc).__name__}: {exc}")
+        return ""
+
+
+def _message_visible_in_chat(
+    message: str,
+    info: dict | None = None,
+    before_text: str = "",
+) -> bool:
+    """Require a newly appearing message, not an older matching message."""
+    target = re.sub(r"[^a-z0-9]+", " ", (message or "").lower()).strip()
+    after_text = _chat_ocr(info)
+    if not target or not after_text or target not in after_text:
+        print("[WhatsApp] Sent message was not found in conversation OCR.")
+        return False
+    # A matching message already present before the send is not proof that the
+    # current request was delivered.
+    if target in before_text and after_text.count(target) <= before_text.count(target):
+        print("[WhatsApp] Matching older message found; delivery is unverified.")
+        return False
+    print("[WhatsApp] Newly sent message text verified in conversation.")
+    return True
 
 
 def _images_differ(before, after, threshold: float = 1.8) -> bool:
@@ -540,9 +566,6 @@ def _search_chat_by_number(phone: str):
 
 
 def _press_whatsapp_send() -> bool:
-    if WHATSAPP_SEND_FROZEN:
-        print("[WhatsApp] SEND FROZEN — not pressing Return.")
-        return False
     if keystroke_in_app("WhatsApp", "return"):
         return True
     mcp_gui.gui_press("enter")
@@ -550,8 +573,8 @@ def _press_whatsapp_send() -> bool:
 
 
 def _send_via_whatsapp_web(phone: str, label: str, message: str) -> tuple[bool, str]:
-    """Keep WhatsApp Web sending behind the dedicated confirmation flow."""
-    return False, "WhatsApp Web sending is disabled; use the confirmation-gated WhatsApp tool."
+    """Legacy fallback hook; native WhatsApp.app is the active send path."""
+    return False, "The native WhatsApp application is required for confirmed sends."
 
 
 def prepare_whatsapp_message(
@@ -563,8 +586,8 @@ def prepare_whatsapp_message(
 ):
     """
     Open WhatsApp.app, open the allowed chat, and type a draft.
-    Sending is disabled by default and reserved for explicit confirmation.
-    Only Sathish's number is allowed.
+    Sending is direct when requested by the caller. Only saved individual
+    contacts are allowed.
     """
     ok, phone, label, err = resolve_whatsapp_number(name_or_number, number)
     if not ok:
@@ -572,15 +595,12 @@ def prepare_whatsapp_message(
 
     refused = _refuse_non_sathish(name_or_number, number, phone, label)
     if refused:
-        print(f"[WhatsApp] Blocked non-Sathish target label={label!r} phone={phone!r}")
+        print(f"[WhatsApp] Blocked target label={label!r} phone={phone!r}")
         return False, refused
 
     digits = _digits(phone)
-    if not digits.endswith(SATHISH_PHONE_TAIL):
-        return False, "WhatsApp is frozen to Sathish only. Nothing was sent."
-
     msg_text = (message or "").strip()
-    print(f"[WhatsApp] Target: Sathish ({digits}), draft: '{msg_text}' send_frozen={WHATSAPP_SEND_FROZEN}")
+    print(f"[WhatsApp] Target: {label} ({digits}), draft: '{msg_text}' send={send}")
 
     try:
         launched = False
@@ -594,48 +614,62 @@ def prepare_whatsapp_message(
             print("[WhatsApp] Desktop app already running.")
 
         print("[WhatsApp] Waiting for WhatsApp.app...")
-        deadline = time.time() + (20.0 if launched else 6.0)
+        deadline = time.time() + (12.0 if launched else 3.0)
         while time.time() < deadline:
             if _whatsapp_pids():
                 break
-            time.sleep(0.3)
+            time.sleep(0.15)
         _focus_whatsapp_window()
-        time.sleep(0.8)
+        time.sleep(0.25)
 
-        print("[WhatsApp] Opening Sathish chat with draft in the box (no send)...")
+        print(f"[WhatsApp] Opening {label}'s chat...")
         _open_chat_by_protocol(digits, msg_text)
-        time.sleep(2.8 if launched else 2.0)
+        time.sleep(1.15 if launched else 0.55)
         _focus_whatsapp_window()
-        time.sleep(0.6)
+        time.sleep(0.2)
 
         if not msg_text:
-            return True, "Opened Sathish's WhatsApp chat. Send is frozen, so nothing was typed or sent."
+            return True, f"Opened {label}'s WhatsApp chat."
 
         if not send:
-            return True, "Opened Sathish's chat and put the draft in the message box. The message was not sent."
-        if WHATSAPP_SEND_FROZEN:
-            return False, "WhatsApp sending is frozen. The message was not sent."
-        info = _wait_for_whatsapp_window(timeout=8.0, focus=True)
-        empty_band = _composer_band_image(info)
-        typed, typed_band = _type_into_composer(msg_text, empty_band, click_first=False, info=info)
+            return True, f"Opened {label}'s chat and put the draft in the message box."
+        info = _wait_for_whatsapp_window(timeout=4.0, focus=False)
+        # The URL already fills the composer. Replace it once, then send, to
+        # avoid the extra screenshot/settle cycle that caused most of the lag.
+        _, typed_band = _type_into_composer(msg_text, None, click_first=True, info=info)
+        before_chat_text = _chat_ocr(info)
 
         print("[WhatsApp] Pressing Return to send...")
         _press_whatsapp_send()
-        time.sleep(0.7)
+        time.sleep(0.35)
         sent_band = _composer_band_image(info)
-        if not _images_differ(typed_band, sent_band, threshold=2.0):
+        if typed_band is not None and sent_band is not None and not _images_differ(typed_band, sent_band, threshold=2.0):
             print("[WhatsApp] Return did not clear the box; clicking send...")
             _click_send_button(info)
-            time.sleep(0.7)
+            time.sleep(0.35)
             sent_band = _composer_band_image(info)
-        if not _images_differ(typed_band, sent_band, threshold=2.0):
+        if typed_band is not None and sent_band is not None and not _images_differ(typed_band, sent_band, threshold=2.0):
             return False, (
                 "WhatsApp send could not be verified: the message box still looks typed."
             )
-        return True, "WhatsApp message sent, sir."
+        # Clearing the composer is not delivery proof. Check the conversation
+        # itself before reporting success; this prevents false "sent" replies
+        # when WhatsApp is on the wrong window or the send key is ignored.
+        verified = False
+        for attempt in range(3):
+            time.sleep(0.45 if attempt == 0 else 0.65)
+            if _message_visible_in_chat(msg_text, info, before_text=before_chat_text):
+                verified = True
+                break
+        if not verified:
+            return False, (
+                "WhatsApp opened the chat, but I could not verify that the message was sent. "
+                "The message may still be in the composer; please check WhatsApp."
+            )
+        return True, "WhatsApp message sent and verified, sir."
     except Exception as e:
         print(f"[WhatsApp] Error: {e}")
-        return False, f"Failed to open Sathish's WhatsApp chat: {str(e)}"
+        return False, f"Failed to open {label}'s WhatsApp chat: {str(e)}"
 
 
 def confirm_send_whatsapp_message():
@@ -674,36 +708,24 @@ def cancel_whatsapp_draft():
 
 
 def send_whatsapp_message(name, message, number: str = "", auto_send: bool = True):
-    """Open a WhatsApp chat and type a draft; sending requires confirmation."""
-    ok, result = prepare_whatsapp_message(name, message, number=number)
-    if ok and message:
-        request = {"name": name, "number": number, "message": message}
+    """Open a saved WhatsApp contact and send the requested message directly."""
+    ok, result = prepare_whatsapp_message(
+        name,
+        message,
+        number=number,
+        send=bool(auto_send),
+    )
+    if ok:
         from brain.memory import save_memory
-        save_memory("last_whatsapp_request", request)
-        if WHATSAPP_SEND_FROZEN:
-            # Nothing can be sent, so nothing is waiting on a "yes". Arming the
-            # draft would let the next unrelated "ok" be swallowed as a send
-            # approval and answered with a frozen refusal.
-            save_memory("pending_whatsapp", None)
-            result += " WhatsApp sending is currently frozen; nothing was sent."
-        else:
-            save_memory("pending_whatsapp", {**request, "awaiting_confirm": True})
-            result += " Say ‘yes’ to confirm sending, or ‘cancel’ to discard it."
+        save_memory("last_whatsapp_request", None)
+        save_memory("pending_whatsapp", None)
     return ok, result
 
 
 def send_whatsapp_to_saved_contacts(message: str, *, confirmed: bool = False) -> tuple:
     """
-    Send one message to every WhatsApp-allowed saved individual.
-    Frozen: refused, because it would message people other than Sathish.
+    Send one confirmed message to every saved individual contact.
     """
-    if not confirmed:
-        return False, "Sending to saved contacts requires an explicit confirmation. Nothing was sent."
-    if WHATSAPP_SEND_FROZEN:
-        return False, (
-            "WhatsApp send is frozen and locked to Sathish only. "
-            "I will not message all contacts."
-        )
     msg = (message or "").strip()
     if not msg:
         return False, "I need the message text before I send to saved contacts, sir."

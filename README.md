@@ -1,114 +1,265 @@
-# J.A.R.V.I.S.
+<p align="center">
+  <img src="miscellaneous/JARVIS.jpg" alt="J.A.R.V.I.S. logo" width="170" />
+</p>
 
-**Just A Rather Very Intelligent System** — local AI desktop assistant with voice, OS automation, and WhatsApp drafting.
+<h1 align="center">J.A.R.V.I.S.</h1>
 
-Rebuilt for **macOS** (Apple Silicon / Intel). WhatsApp uses WhatsApp.app; browser automation uses Puppeteer + Google Chrome.
+<p align="center">
+  <strong>Just A Rather Very Intelligent System</strong><br />
+  A local-first AI desktop assistant for macOS — voice, OS automation, WhatsApp
+  drafting, and browser control.
+</p>
 
-## Launch for demo
+<p align="center">
+  macOS · Python 3.12 · FastAPI · Next.js 16 · React 19 · Electron · Ollama
+</p>
 
-1. Double-click **`JARVIS.app`** on the Desktop (circular J.A.R.V.I.S. logo)
-2. Wait for the **desktop window** (Electron, with a native Swift fallback). The UI does not open in Safari or Chrome.
-3. Use that window — voice + chat live there
-4. **Close the Jarvis window** — that stops frontend, backend, and browser automation
+---
 
-```bash
-# From a terminal in this folder:
-npm run jarvis          # toggle start/stop
-npm run jarvis:start    # force start
-npm run jarvis:stop     # force stop
+## Screenshots
+
+### Main workspace
+
+Voice orb, live agent steps, streaming conversation, quick actions, and backend
+health in one desktop window.
+
+![J.A.R.V.I.S. main workspace in dark mode](docs/screenshots/01-main-ui.png)
+
+### Core settings
+
+Wake word, transcript feedback, audio volume, confidence threshold, theme, and
+security controls.
+
+![J.A.R.V.I.S. core settings](docs/screenshots/02-settings.png)
+
+### Light theme
+
+The same workspace with the light "Pro" theme. OS-control commands such as
+opening apps and setting the system volume are handled locally.
+
+![J.A.R.V.I.S. main workspace in light mode](docs/screenshots/03-light-theme.png)
+
+---
+
+## What it does
+
+| Capability | Details |
+| --- | --- |
+| Local chat | Ollama `qwen3:4b` with thinking disabled for the normal chat path; optional `qwen3:8b` planning model |
+| Voice | Local English speech recognition (`faster-whisper base.en`), wake word, and hybrid local TTS |
+| Desktop UI | Next.js 16 + React 19 frontend inside an Electron shell, with a native Swift window fallback |
+| macOS control | Open/close apps, set output volume, focus windows, and run AppleScript / accessibility actions |
+| WhatsApp | Uses native WhatsApp.app, resolves contacts from a local allowlist, and asks for confirmation before sending |
+| Browser automation | Puppeteer + Google Chrome for YouTube, YouTube Music, Spotify, search, and scripted demos |
+| Memory | SQLite-backed facts and contacts plus an editable user profile in `docs/user-profile.md` |
+| Observability | Real-time state orb, backend latency badge, and an autonomous agent step tracker |
+
+The regular conversation path never leaves the machine. Optional integrations
+such as planning through Groq are only used when explicitly configured.
+
+## Architecture
+
+```text
+┌──────────────────────────────────────────────┐
+│ Electron desktop window                      │
+│ Next.js 16 · React 19 · Three.js orb         │
+└──────────────────────┬───────────────────────┘
+                       │ HTTP + WebSocket
+┌──────────────────────▼───────────────────────┐
+│ FastAPI core — 127.0.0.1:8000                │
+│ router · tools · STT/TTS · memory · safety   │
+└───────┬─────────────────┬────────────────────┘
+        │                 │
+   Ollama LLM       macOS APIs
+   qwen3:4b         AppleScript · Quartz · PyAutoGUI
+        │
+   Chrome + Puppeteer
+   browser control plane — 127.0.0.1:3920
 ```
-
-JARVIS uses local Ollama inference and local English speech recognition. Install
-the backend dependencies first, then prepare the model weights:
-
-```bash
-# One-time backend setup
-cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cd ..
-
-# Terminal 1
-ollama serve
-
-# Terminal 2
-./scripts/setup_models.sh
-```
-
-The normal chat path uses `qwen3:4b` with thinking disabled. The optional
-`./scripts/setup_models.sh --planning` also downloads `qwen3:8b` for explicit
-planning requests. Voice input uses the English-only faster-whisper `base.en`
-model on the machine; `setup_models.sh` caches its weights locally.
-
-macOS will ask for **Accessibility** (WhatsApp keystrokes / window bounds) and **Microphone** (voice). Allow Python or Terminal under System Settings → Privacy & Security → Accessibility.
-
-## What it runs
 
 | Component | Port | Role |
-|-----------|------|------|
-| FastAPI backend | 8000 | Brain, tools, STT/TTS, automation |
-| Next.js dev UI | 3000 | Local frontend served to the desktop window during development |
-| Desktop window | — | Electron shell (native Swift fallback): orb and conversation thread |
+| --- | --- | --- |
+| FastAPI backend | `8000` | Brain, tools, STT/TTS, automation |
+| Next.js UI | `3000` | Local UI loaded by the desktop window |
+| Puppeteer control plane | `3920` | Chrome automation for music, search, and demos |
+| Electron layout server | `3930` | Window placement helpers |
+| Ollama | `11434` | Local model inference |
 
-## Demo commands
+## Quick start
+
+### Prerequisites
+
+- macOS on Apple Silicon or Intel
+- Node.js 20+ and npm
+- Python 3.12
+- [Ollama](https://ollama.com/) installed and running
+- Google Chrome for browser automation
+- Optional: WhatsApp Desktop for messaging demos
+
+### Install
+
+```bash
+git clone <your-repo-url> JarvisAI
+cd JarvisAI
+
+# Frontend dependencies
+cd frontend
+npm install
+cd ..
+
+# Backend dependencies
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+
+# Pull the local models and cache the English STT weights
+./scripts/setup_models.sh
+# Optional: also pull the 8B planning model
+# ./scripts/setup_models.sh --planning
+```
+
+Keep Ollama running in a separate terminal:
+
+```bash
+ollama serve
+```
+
+### Run
+
+One command starts the backend, the local UI, and the Electron desktop window:
+
+```bash
+./scripts/jarvis-launcher.sh --start
+```
+
+Other launcher modes:
+
+```bash
+./scripts/jarvis-launcher.sh          # toggle start/stop
+./scripts/jarvis-launcher.sh --stop   # stop everything
+```
+
+Or run the pieces manually:
+
+```bash
+# Terminal 1 — backend
+backend/.venv/bin/python backend/main.py
+
+# Terminal 2 — Next.js dev server + desktop window
+npm run desktop --prefix frontend
+```
+
+Closing the JARVIS window stops the frontend, backend, and browser automation.
+
+### Build a macOS app bundle
+
+```bash
+./scripts/build-jarvis-app.sh
+```
+
+This creates `miscellaneous/desktop-launcher/JARVIS.app` with the project logo
+and installs a copy as `~/Desktop/JARVIS.app`.
+
+## Try these commands
 
 - `Hello Jarvis, introduce yourself`
 - `What time is it?`
+- `Open Calculator` / `Close Calculator`
 - `Open TextEdit` / `Close TextEdit`
-- `Open Calculator`
-- `Tell me a joke`
 - `Set volume to 40`
-- `send sathish hello` → native WhatsApp.app (saved contact required)
-- `play Back in Black on YouTube Music` → Puppeteer + Google Chrome
+- `Tell me a joke`
+- `send sathish hello` — drafts a message in WhatsApp.app and waits for confirmation
+- `play Back in Black on YouTube Music` — drives Chrome through Puppeteer
 
-See **docs/PRESENTATION_DEMO.md** for a full judge script.
+See [`docs/PRESENTATION_DEMO.md`](docs/PRESENTATION_DEMO.md) for a complete
+60–90 second demo script.
+
+## macOS permissions
+
+JARVIS may ask for:
+
+- **Microphone** — voice input and wake word
+- **Accessibility** — app control, window bounds, and WhatsApp keystrokes
+- **Screen Recording** — screen-aware tools and visual verification
+
+Grant these under **System Settings → Privacy & Security**. If you run the
+backend from a terminal, grant permission to the terminal app or to Python.
+
+## Configuration
+
+| File | Purpose |
+| --- | --- |
+| `backend/.env` | Optional credentials and model overrides (not committed) |
+| `backend/brain/settings.json` | UI settings: theme, volume, wake word, confidence, selected model |
+| `backend/executor/whatsapp_contacts.json` | Local WhatsApp contact allowlist |
+| `docs/user-profile.md` | Editable user preferences and routines |
+| `jarvis_memory.json` | Live short-term memory state (gitignored) |
+
+Common backend environment variables include `LLM_MODEL`, `OLLAMA_BASE_URL`,
+`PLANNING_MODEL`, `VISION_MODEL`, and the optional `GROQ_API_KEY`. See
+[`backend/config.py`](backend/config.py) for the full list.
+
+## Development
+
+```bash
+# UI only
+npm run dev --prefix frontend
+
+# Lint
+npm run lint --prefix frontend
+
+# Backend + desktop window
+./scripts/dev_run.sh
+
+# Backend tests (run from backend/)
+cd backend
+.venv/bin/python tests/test_memory_store.py
+```
 
 ## Project layout
 
-```
+```text
 JarvisAI/
-├── frontend/             Next.js UI + Electron desktop shell
-│   ├── app/              App Router pages (page.tsx, layout.tsx, globals.css)
-│   ├── components/       UI components (components/ui/ = shadcn primitives)
-│   ├── hooks/            React hooks (useJarvis, useBackendStatus, ...)
-│   ├── lib/              shared TS helpers (clsx + tailwind-merge)
-│   ├── public/           static assets
-│   ├── electron-main.js  desktop window entry point (package.json "main")
-│   └── package.json      JS deps + scripts (dev/build/start/desktop)
-├── backend/              Python FastAPI core — brain, tools, STT/TTS
-│   ├── main.py           FastAPI entry point (run with backend/.venv/bin/python)
-│   ├── config.py         shared Python settings (loads backend/.env)
+├── frontend/                 Next.js UI + Electron desktop shell
+│   ├── app/                  App Router pages and global styles
+│   ├── components/           UI, chat, orb, settings, and agent tracker
+│   ├── hooks/                useJarvis, backend health, chat scrolling
+│   ├── electron-main.js      Electron entry point and window management
+│   └── package.json          JS dependencies and dev/build/desktop scripts
+├── backend/                  Python FastAPI core
+│   ├── main.py               FastAPI entry point
+│   ├── config.py             Environment and model settings
 │   ├── api/ brain/ executor/ services/ stt/ tts/ vision/
 │   ├── llm/ memory/ mcp_clients/ mcp_servers/ retry/ router/
-│   ├── browser-automation/ Puppeteer control plane (Node service)
-│   ├── desktop_app/      PyQt native desktop client (jarvis_app.py)
-│   └── tests/            standalone tests: backend/.venv/bin/python tests/test_*.py
-├── scripts/              launcher, dev runner, model setup, app bundler
-├── docs/                 design notes, build plan, demo script
-├── miscellaneous/        non-source artifacts kept out of the way
-│   ├── desktop-launcher/ JARVIS.app bundle, JARVIS.command, Swift window source
-│   ├── logs/             runtime logs (backend, frontend, launcher, ollama)
-│   ├── build/            generated icon sets (gitignored)
-│   ├── JARVIS.jpg        logo master used to build the app icon
-│   └── jarvis_icon.icns  generated macOS icon
-├── jarvis_memory.json    live short-term memory state (gitignored, read by brain/memory.py)
-├── package.json          thin root proxy — delegates to frontend/ via --prefix
-└── package-desktop.js    Electron packager script (run from the repo root)
+│   ├── browser-automation/   Puppeteer control plane
+│   ├── desktop_app/          PyQt desktop client
+│   └── tests/                Standalone backend tests
+├── scripts/                  Launcher, dev runner, model setup, app bundler
+├── docs/                     Design notes, demo script, screenshots
+│   └── screenshots/          README screenshots
+├── miscellaneous/            Logo, app bundle, runtime logs, non-source artifacts
+├── jarvis_memory.json        Short-term memory state (gitignored)
+├── package-desktop.js        Electron packager script
+└── AGENTS.md                 Repository instructions
 ```
 
-- UI: `npm run desktop --prefix frontend` → Electron window + local Next.js dev server
-- Lint: `npm run lint --prefix frontend`
-- Fresh install: `cd frontend && npm install` · `cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
-- Package desktop UI: `node package-desktop.js` (start FastAPI on port 8000 first)
+## Documentation
 
-## Dev (manual)
+- [Judge presentation guide](docs/PRESENTATION_DEMO.md)
+- [Agent personality](docs/agent-personality.md)
+- [User profile](docs/user-profile.md)
+- [Contacts and WhatsApp flow](docs/contacts-whatsapp-flow.md)
+- [Build plan v2](docs/build-plan-v2.md)
+- [Browser automation service](backend/browser-automation/README.md)
 
-```bash
-# Terminal 1
-cd backend
-source .venv/bin/activate
-python main.py
+## Troubleshooting
 
-# Terminal 2 (starts the local Next.js dev server and the desktop window)
-npm run desktop --prefix frontend
-```
+- **Backend offline in the UI** — verify `http://127.0.0.1:8000/health` responds
+  and check `miscellaneous/logs/backend.err.log`.
+- **Model not found** — run `./scripts/setup_models.sh` and confirm Ollama is
+  serving on port `11434`.
+- **Voice does not work** — allow Microphone access and make sure no other app is
+  holding the input device.
+- **App control or WhatsApp fails** — grant Accessibility permission to the
+  terminal or Python binary that launches the backend.
+- **Port already in use** — stop the conflicting process on `3000`, `8000`,
+  `3920`, or `3930`, or run `./scripts/jarvis-launcher.sh --stop`.

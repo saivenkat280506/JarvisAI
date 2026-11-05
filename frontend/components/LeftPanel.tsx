@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Orb, AgentState } from "@/components/ui/orb";
 import { Waveform } from "@/components/ui/waveform";
 import { Mic, MicOff, Settings2, ShieldCheck, WifiOff, Zap } from "lucide-react";
@@ -13,6 +13,7 @@ interface LeftPanelProps {
   isBackendOnline?: boolean;
   toggleMic: () => void;
   speechTranscript: string;
+  sttStatus?: string;
   onSettingsClick: () => void;
 }
 
@@ -22,6 +23,7 @@ export default function LeftPanel({
   isBackendOnline = true,
   toggleMic,
   speechTranscript,
+  sttStatus = "standby",
   onSettingsClick
 }: LeftPanelProps) {
   const [isDark, setIsDark] = useState(false);
@@ -37,13 +39,18 @@ export default function LeftPanel({
   const isOffline = agentState === "offline" || !isBackendOnline;
   const isActive = !isOffline && agentState !== "idle";
 
-  const waveformData = isActive
-    ? Array.from({ length: 40 }, () => {
-        const base = agentState === "talking" ? 0.6 : 0.3;
-        const variance = agentState === "talking" ? 0.4 : 0.2;
-        return Math.random() * variance + base;
-      })
-    : [];
+  // Keep the waveform shape stable while React re-renders for transcript,
+  // pipeline, and backend-status updates. Generating random bars directly in
+  // render made the visual jump every time a new event arrived.
+  const waveformData = useMemo(() => {
+    if (!isActive) return [];
+    const base = agentState === "talking" ? 0.6 : 0.3;
+    const variance = agentState === "talking" ? 0.4 : 0.2;
+    return Array.from({ length: 40 }, (_, index) => {
+      const wave = (Math.sin(index * 1.71 + 0.8) + 1) / 2;
+      return base + wave * variance;
+    });
+  }, [agentState, isActive]);
 
   const statusLabel = isOffline
     ? "Backend Offline"
@@ -55,6 +62,12 @@ export default function LeftPanel({
 
   const subtitle = isOffline
     ? "Backend unreachable — start Jarvis backend"
+    : sttStatus === "capturing"
+    ? "Microphone active — speak or whisper"
+    : sttStatus === "transcribing"
+    ? "Converting your voice to text..."
+    : sttStatus === "finalizing"
+    ? "Finalizing transcription..."
     : isListening
     ? "Listening to your request..."
     : agentState === "idle_listening"

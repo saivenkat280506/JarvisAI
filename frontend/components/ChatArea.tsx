@@ -10,7 +10,7 @@ import {
   TranscriptViewerScrubBar,
   TranscriptViewerWords,
 } from "@/components/ui/transcript-viewer";
-import { SendHorizontal, Mic, FileUp, PauseIcon, PlayIcon } from "lucide-react";
+import { SendHorizontal, Mic, FileUp, PauseIcon, PlayIcon, Radio, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import SearchBriefing, { SearchBriefingData } from "@/components/SearchBriefing";
@@ -35,6 +35,7 @@ export interface ChatAreaProps {
   sendMessage: (text: string) => void;
   streamingText?: string;
   speechTranscript?: string;
+  sttStatus?: string;
   agentState?: AgentState;
   isBackendOnline?: boolean;
   toggleMic?: () => void;
@@ -47,12 +48,37 @@ export default function ChatArea({
   sendMessage,
   streamingText,
   speechTranscript,
+  sttStatus = "standby",
   agentState,
   isBackendOnline = true,
   toggleMic
 }: ChatAreaProps) {
   const scrollRef = useChatScroll([messages, streamingText, speechTranscript]);
   const isOffline = agentState === "offline" || !isBackendOnline;
+  const sttLabel = sttStatus === "capturing"
+    ? "Microphone active — speak or whisper"
+    : sttStatus === "transcribing"
+    ? "Converting audio to text"
+    : sttStatus === "finalizing"
+    ? "Finalizing transcription"
+    : sttStatus === "no_speech"
+    ? "No speech detected — ready again"
+    : "";
+  const pipelineLabel = isOffline
+    ? "Waiting for backend"
+    : agentState === "listening"
+    ? "Listening"
+    : sttLabel
+    ? sttLabel
+    : agentState === "transcribing"
+    ? "Converting voice to text"
+    : agentState === "thinking"
+    ? "Thinking"
+    : agentState === "talking"
+    ? "Delivering response"
+    : agentState === "idle_listening"
+    ? "Voice loop ready"
+    : "Text mode ready";
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-transparent">
@@ -61,14 +87,33 @@ export default function ChatArea({
           Backend offline — Jarvis cannot listen, speak, or run tasks until the server is back.
         </div>
       )}
+      <div className="mx-6 mt-4 flex items-center justify-between rounded-2xl border border-white/60 bg-white/55 px-4 py-2.5 shadow-sm backdrop-blur-md dark:border-zinc-700/60 dark:bg-zinc-900/55">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
+            isOffline ? "bg-red-100 text-red-500 dark:bg-red-950/40" : "bg-cyan-100 text-cyan-700 dark:bg-cyan-950/50 dark:text-cyan-300"
+          )}>
+            {agentState === "talking" ? <Sparkles className="h-3.5 w-3.5" /> : <Radio className="h-3.5 w-3.5" />}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground/70">Voice pipeline</p>
+            <p className="truncate text-xs font-medium text-foreground/80">{pipelineLabel}</p>
+          </div>
+        </div>
+        <span className={cn(
+          "ml-3 h-2 w-2 shrink-0 rounded-full",
+          isOffline ? "bg-red-400" : "bg-emerald-400 animate-pulse"
+        )} />
+      </div>
       {/* MESSAGES VIEWPORT */}
       <div 
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-6 py-4 space-y-6 scrollbar-hide"
       >
         <div className="flex flex-col gap-1 pb-4">
-          <div className="flex items-center gap-2 px-2 py-4">
-            <span className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">Conversation Log</span>
+          <div className="flex items-center gap-3 px-2 py-5">
+            <span className="text-[10px] font-bold text-muted-foreground/60 uppercase tracking-[0.2em]">Conversation</span>
+            <span className="rounded-full bg-muted/70 px-2 py-0.5 text-[9px] font-jetbrains text-muted-foreground/70">{messages.length} events</span>
             <div className="flex-1 h-px bg-border/40" />
           </div>
 
@@ -92,11 +137,15 @@ export default function ChatArea({
                       audioSrc={msg.audioSrc}
                       audioType="audio/mpeg"
                       alignment={msg.alignment || { characters: [], characterStartTimesSeconds: [], characterEndTimesSeconds: [] }}
-                      className="bg-white/80 dark:bg-zinc-900/80 border border-white/40 dark:border-zinc-700/40 shadow-sm rounded-2xl p-4 backdrop-blur-md"
+                    className="bg-white/85 dark:bg-zinc-900/85 border border-cyan-100/70 dark:border-cyan-900/40 shadow-sm rounded-2xl p-5 backdrop-blur-md"
                     >
                       <TranscriptViewerAudio className="sr-only" />
                       <div className="mb-4">
-                         <TranscriptViewerWords className="text-sm !leading-relaxed text-slate-700 dark:text-slate-300" />
+                         <div className="mb-3 flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.18em] text-cyan-700/70 dark:text-cyan-300/70">
+                           <span className="h-1.5 w-1.5 rounded-full bg-cyan-500" />
+                           Spoken response
+                         </div>
+                         <TranscriptViewerWords className="text-[15px] !leading-7 text-slate-700 dark:text-slate-300" />
                       </div>
                       <div className="flex items-center gap-4 border-t border-slate-100 dark:border-slate-700 pt-3">
                         <TranscriptViewerPlayPauseButton className="h-8 w-8 rounded-full shrink-0">
@@ -120,13 +169,11 @@ export default function ChatArea({
                         : "rounded-2xl rounded-br-none bg-primary text-primary-foreground dark:bg-sky-950/40 dark:text-cyan-100 dark:border dark:border-cyan-500/30"
                     )}
                   >
-                    {msg.isStreaming && msg.role === "assistant" ? (
+                    {msg.role === "assistant" ? (
                       <Response>
-                        {streamingText || msg.content}
+                        {msg.isStreaming ? (streamingText || msg.content) : msg.content}
                       </Response>
-                    ) : (
-                      msg.content
-                    )}
+                    ) : msg.content}
                     {msg.role === "assistant" && msg.briefing && (
                       <SearchBriefing briefing={msg.briefing} />
                     )}
@@ -150,9 +197,9 @@ export default function ChatArea({
                   variant="contained" 
                   className="rounded-2xl rounded-br-none bg-primary/40 text-primary-foreground dark:bg-sky-950/20 dark:text-cyan-200/70 font-inter text-[14px] italic border border-white/10 dark:border-cyan-500/20"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-start gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary-foreground animate-pulse" />
-                    {speechTranscript}
+                    <span><span className="mr-2 text-[9px] font-bold uppercase tracking-wider opacity-70">Live transcription</span>{speechTranscript}</span>
                   </div>
                 </MessageContent>
               </Message>

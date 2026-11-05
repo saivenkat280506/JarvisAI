@@ -101,6 +101,12 @@ def _speechable_response(value: str) -> str:
 _DB_CONVERSATION_ID = None
 _DB_CONVERSATION_LOCK = threading.Lock()
 
+# News is intentionally cached briefly: repeated voice requests such as
+# "read the headlines" should not wait on another network round trip when the
+# user is asking for the same current briefing.
+_NEWS_CACHE: dict[str, tuple[float, dict]] = {}
+_NEWS_CACHE_TTL_SECONDS = 45.0
+
 
 def _ensure_conversation_id() -> str | None:
     """Use one local conversation row for this backend process lifetime."""
@@ -288,8 +294,15 @@ async def _fetch_news_summary(query: str = "") -> dict:
     import html
     import xml.etree.ElementTree as ET
 
-    news_key = settings.NEWS_API_KEY
     topic = (query or "").strip()
+    cache_key = topic.lower() or "top stories"
+    cached = _NEWS_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached and now - cached[0] < _NEWS_CACHE_TTL_SECONDS:
+        print(f"[News] Cache hit query={cache_key!r}")
+        return cached[1]
+
+    news_key = settings.NEWS_API_KEY
     topic_lower = topic.lower()
     general_news = not topic or topic_lower in {
         "news", "headlines", "latest news", "top stories", "today's news", "todays news"
@@ -299,11 +312,15 @@ async def _fetch_news_summary(query: str = "") -> dict:
 
     if news_key:
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=2.5) as client:
                 if general_news and not world_news:
                     r = await client.get(
                         "https://newsapi.org/v2/top-headlines",
-                        params={"country": "us", "pageSize": 6, "apiKey": news_key},
+                        params={
+                            "country": settings.NEWS_COUNTRY,
+                            "pageSize": 4,
+                            "apiKey": news_key,
+                        },
                     )
                 else:
                     r = await client.get(
@@ -311,8 +328,8 @@ async def _fetch_news_summary(query: str = "") -> dict:
                         params={
                             "q": topic,
                             "sortBy": "publishedAt",
-                            "pageSize": 6,
-                            "language": "en",
+                            "pageSize": 4,
+                            "language": settings.NEWS_LANGUAGE,
                             "apiKey": news_key,
                         },
                     )
@@ -327,23 +344,27 @@ async def _fetch_news_summary(query: str = "") -> dict:
                     }
                     for article in data.get("articles", [])
                     if article.get("title") and article.get("url")
-                ][:6]
+                ][:4]
         except Exception as exc:
             print(f"[News] Fetch error: {exc}")
 
     if not items:
         try:
-            cache_buster = int(time.time())
             rss_query = "top stories" if general_news and not world_news else (topic or "top stories")
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=2.5) as client:
                 r = await client.get(
                     "https://news.google.com/rss/search",
-                    params={"q": rss_query, "hl": "en-US", "gl": "US", "ceid": "US:en", "t": cache_buster},
+                    params={
+                        "q": rss_query,
+                        "hl": "en-IN",
+                        "gl": "IN",
+                        "ceid": "IN:en",
+                    },
                     follow_redirects=True,
                     headers={"User-Agent": "Mozilla/5.0"},
                 )
                 root = ET.fromstring(r.text)
-                for item in root.findall(".//item")[:6]:
+                for item in root.findall(".//item")[:4]:
                     title = item.findtext("title") or ""
                     link = item.findtext("link") or ""
                     description = html.unescape(item.findtext("description") or "")
@@ -387,18 +408,48 @@ async def _fetch_news_summary(query: str = "") -> dict:
             "The news feed returned headlines without article descriptions, so this digest is based on titles alone. "
             "Open a source below for the full report."
         )
-    summary = await _ollama_generate(
-        prompt,
-        system=(
-            "You are J.A.R.V.I.S. delivering a concise current news briefing. "
-            "Be accurate, neutral, and concise."
-        ),
-        allow_greeting=False,
-        fallback=fallback_summary,
-    )
+    try:
+        # News should remain useful even if the local model is cold or busy.
+        # A short cap keeps speech delivery from waiting through LLM retries;
+        # the feed-derived fallback is already accurate and immediately usable.
+        summary = await asyncio.wait_for(
+            _ollama_generate(
+                prompt,
+                system=(
+                    "You are J.A.R.V.I.S. delivering a concise current news briefing. "
+                    "Be accurate, neutral, and concise."
+                ),
+                allow_greeting=False,
+                fallback=fallback_summary,
+            ),
+            timeout=1.25,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:
+        print(f"[News] Fast summary fallback: {type(exc).__name__}")
+        summary = fallback_summary
     from executor.search_briefing import format_chat_briefing, short_spoken_body
 
-    spoken = short_spoken_body(_strip_leading_greeting(summary), max_sentences=3, max_words=72)
+    # The chat view is intentionally concise, but voice mode must not discard
+    # fetched headlines. Read every returned item, with a short feed snippet
+    # when available, so the spoken briefing matches the sources shown on
+    # screen instead of stopping after two takeaway sentences.
+    spoken_parts = [f"Here are the latest headlines for {topic or 'today'}. "]
+    for index, item in enumerate(items, start=1):
+        title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip(" .")
+        snippet = short_spoken_body(
+            str(item.get("snippet") or ""),
+            max_sentences=1,
+            max_words=32,
+        )
+        if not title:
+            continue
+        line = f"Headline {index}, {title}"
+        if snippet:
+            line += f". {snippet}"
+        spoken_parts.append(line + ".")
+    spoken = " ".join(spoken_parts).strip()
+    if not spoken:
+        spoken = _strip_leading_greeting(summary)
     chat = format_chat_briefing(
         topic or "Top stories",
         spoken,
@@ -406,7 +457,13 @@ async def _fetch_news_summary(query: str = "") -> dict:
         heading="Latest news",
         item_heading="Headlines and sources",
     )
-    return {"summary": spoken, "chat": chat, "sources": items}
+    result = {"summary": spoken, "chat": chat, "sources": items}
+    _NEWS_CACHE[cache_key] = (time.monotonic(), result)
+    # Keep this bounded if a user asks for many different topics in one session.
+    if len(_NEWS_CACHE) > 24:
+        oldest = min(_NEWS_CACHE, key=lambda key: _NEWS_CACHE[key][0])
+        _NEWS_CACHE.pop(oldest, None)
+    return result
 
 
 def _derive_news_query(command: str, explicit_query: str = "") -> str:
@@ -444,9 +501,10 @@ async def _speak_in_background(text: str, is_smart: bool, response_id: str):
     speak_epoch = flags.speak_epoch
     if flags.speak_epoch != speak_epoch:
         return
-    # Mark speaking without awaiting a full round-trip before audio starts
+    # Broadcast state without making the first audio buffer wait on a websocket
+    # round-trip.
     try:
-        await set_state(SystemState.SPEAKING)
+        asyncio.create_task(set_state(SystemState.SPEAKING))
     except Exception:
         pass
     try:
@@ -719,6 +777,12 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
         speech_response: str | None = None
         news_briefing_ready: dict | None = None
         ack: str | None = None  # optional early spoken ack (browser tools)
+
+        await manager.broadcast_json({
+            "type": "pipeline_stage",
+            "stage": "act",
+            "detail": f"Executing {intent or 'conversation'}",
+        })
 
         if intent == "greeting":
             final_response = greeting_line()
@@ -1160,6 +1224,12 @@ async def process_command(command_text: str, request_id: str = None, voice: bool
             speech_text = speech_response or _speechable_response(final_response)
             flags.last_assistant_response = speech_text
             _record_message("assistant", final_response, intent)
+
+            await manager.broadcast_json({
+                "type": "pipeline_stage",
+                "stage": "respond",
+                "detail": "Showing and reading the response",
+            })
 
             # Start voice FIRST (before UI push / SSE) so audio begins ASAP after text is ready
             if flags.speak_epoch != command_epoch:

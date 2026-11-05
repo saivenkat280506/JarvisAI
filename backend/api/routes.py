@@ -175,8 +175,8 @@ async def toggle_mute_endpoint():
 # ── Chat (SSE) ──────────────────────────────────────────────────────────────
 @router.post("/chat")
 async def chat_endpoint(request: dict):
-    from tts.pocket_tts import stop_speech
-    stop_speech()
+    from tts.hybrid_tts import force_stop_all_tts
+    force_stop_all_tts()
     flags.prepare_for_new_command()
 
     text = request.get("text", "")
@@ -208,6 +208,14 @@ async def stop_trigger():
 
     from tts.hybrid_tts import force_stop_all_tts
     force_stop_all_tts()
+
+    # Voice Mode is a hard audio stop: cancel speech and any local music that
+    # could otherwise keep playing after the user has pressed the button.
+    try:
+        from executor.music_services import stop_local_music
+        stop_local_music()
+    except Exception as exc:
+        print(f"[Stop] Local audio stop error: {exc}")
 
     try:
         from executor.web_agent import request_stop
@@ -339,6 +347,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     force_stop_all_tts()
                 except Exception as exc:
                     print(f"[WS Stop] Error stopping TTS: {exc}")
+                try:
+                    from executor.music_services import stop_local_music
+                    stop_local_music()
+                except Exception as exc:
+                    print(f"[WS Stop] Error stopping local audio: {exc}")
                 try:
                     from executor.web_agent import request_stop
                     request_stop()

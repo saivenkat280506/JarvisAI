@@ -11,6 +11,8 @@ _ENV_FILES = tuple(
 class Settings(BaseSettings):
     # External credentials are reserved for explicit fetch-only integrations.
     NEWS_API_KEY: str = ""
+    NEWS_COUNTRY: str = "in"
+    NEWS_LANGUAGE: str = "en"
     HF_TOKEN: str = ""
     
     # Model settings

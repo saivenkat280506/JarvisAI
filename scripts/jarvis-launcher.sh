@@ -52,6 +52,8 @@ SWIFT_BIN="$ROOT/miscellaneous/desktop-launcher/jarvis-desktop-window"
 FRONTEND_PID=""
 BACKEND_PID=""
 DESKTOP_PID=""
+OLLAMA_PID=""
+OLLAMA_APP_STARTED=0
 
 # Next.js / npm must not pop the system browser — the desktop window is the UI.
 export BROWSER=none
@@ -184,8 +186,11 @@ ensure_ollama() {
 
   if [[ -n "$bin" ]]; then
     nohup "$bin" serve >>"$LOG_DIR/ollama.log" 2>&1 &
+    OLLAMA_PID=$!
+    OLLAMA_APP_STARTED=1
   elif [[ -d /Applications/Ollama.app ]]; then
     open -a Ollama >/dev/null 2>&1 || true
+    OLLAMA_APP_STARTED=1
   else
     step "Ollama not installed — LLM answers will use canned fallbacks" "ERR"
     return 1
@@ -200,8 +205,9 @@ ensure_ollama() {
 }
 
 save_pids() {
-  printf 'backend=%s\ndesktop=%s\nstarted=%s\n' \
-    "${1:-}" "${2:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PID_FILE"
+  printf 'backend=%s\nfrontend=%s\ndesktop=%s\nollama=%s\nollama_app_started=%s\nstarted=%s\n' \
+    "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${OLLAMA_APP_STARTED:-0}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PID_FILE"
 }
 
 notify() {
@@ -442,15 +448,14 @@ stop_jarvis() {
   if [[ -f "$PID_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$PID_FILE" 2>/dev/null || true
-    [[ -n "${desktop:-}" ]] && kill "$desktop" >/dev/null 2>&1 || true
-    [[ -n "${electron:-}" ]] && kill "$electron" >/dev/null 2>&1 || true
-    [[ -n "${backend:-}" ]] && kill "$backend" >/dev/null 2>&1 || true
-    [[ -n "${frontend:-}" ]] && kill "$frontend" >/dev/null 2>&1 || true
-    sleep 0.4
-    [[ -n "${desktop:-}" ]] && kill -9 "$desktop" >/dev/null 2>&1 || true
-    [[ -n "${electron:-}" ]] && kill -9 "$electron" >/dev/null 2>&1 || true
-    [[ -n "${backend:-}" ]] && kill -9 "$backend" >/dev/null 2>&1 || true
-    [[ -n "${frontend:-}" ]] && kill -9 "$frontend" >/dev/null 2>&1 || true
+    stop_pid_tree "${desktop:-}"
+    stop_pid_tree "${electron:-}"
+    stop_pid_tree "${frontend:-}"
+    stop_pid_tree "${backend:-}"
+    stop_pid_tree "${ollama:-}"
+    if [[ "${ollama_app_started:-0}" == "1" ]]; then
+      osascript -e 'tell application "Ollama" to quit' >/dev/null 2>&1 || true
+    fi
     rm -f "$PID_FILE"
   fi
 
@@ -470,6 +475,18 @@ stop_jarvis() {
   echo ""
   step "J.A.R.V.I.S. stopped. All frontend and backend processes terminated." "OK"
   echo ""
+}
+
+stop_pid_tree() {
+  local pid="${1:-}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    stop_pid_tree "$child"
+  done
+  kill -TERM "$pid" >/dev/null 2>&1 || true
+  sleep 0.15
+  kill -KILL "$pid" >/dev/null 2>&1 || true
 }
 
 cleanup_on_close() {
@@ -607,7 +624,7 @@ start_jarvis() {
   fi
   focus_desktop_window
 
-  save_pids "$BACKEND_PID" "$DESKTOP_PID"
+  save_pids "$BACKEND_PID" "$FRONTEND_PID" "$DESKTOP_PID" "$OLLAMA_PID"
 
   echo ""
   echo "${cyan}  --------------------------------------------------------${reset}"

@@ -27,8 +27,7 @@ cases = [
     ("whatsapp sathish", "sathish", ""),
     ("open whatsapp and send Satish hi", "sathish", "hi"),
     ("send hi to sathish", "sathish", "hi"),
-    # "type"/"write" are the same verb family as send/text: the draft goes in
-    # the message box and the send button stays frozen.
+    # "type"/"write" are the same verb family as send/text for saved contacts.
     ("can you just type hi to sathish in whatsapp", "sathish", "hi"),
     ("can you type hi to sathish in whatsapp", "sathish", "hi"),
     ("type hi to sathish", "sathish", "hi"),
@@ -51,16 +50,19 @@ for text in ("type the report into the terminal", "write a python function to so
     check(f"{text!r} is not a send", intent != "send_whatsapp")
 
 ok, phone, label, err = resolve_whatsapp_number("sathish")
-check("resolve sathish", ok and phone.endswith(os.environ.get("SATHISH_PHONE_TAIL", "9876543210")))
+check("resolve saved contact", ok and phone == "+918519929108")
 
 ok, phone, label, err = resolve_whatsapp_number("Sadeesh")
-check(f"resolve Sadeesh -> {phone} {err}", ok and phone.endswith(os.environ.get("SATHISH_PHONE_TAIL", "9876543210")))
+check(f"resolve Sadeesh -> {phone} {err}", ok and phone == "+918519929108")
+
+ok, phone, label, err = resolve_whatsapp_number("Manobi")
+check(f"resolve Manobi -> {phone} {err}", ok and phone == "+918016900810")
 
 ok, phone, label, err = resolve_whatsapp_number("Satish", "+91...")
-check("ignore placeholder +91...", ok and phone.endswith(os.environ.get("SATHISH_PHONE_TAIL", "9876543210")))
+check("ignore placeholder +91...", ok and phone == "+918519929108")
 
 ok, phone, label, err = resolve_whatsapp_number("Satish", number="+91...")
-check("ignore explicit placeholder", ok and phone.endswith(os.environ.get("SATHISH_PHONE_TAIL", "9876543210")))
+check("ignore explicit placeholder", ok and phone == "+918519929108")
 
 ok, phone, label, err = resolve_whatsapp_number("everyone")
 check("block everyone", not ok)

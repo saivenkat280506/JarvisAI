@@ -29,12 +29,12 @@ from stt.filter import is_phantom_transcript, is_whisper_hallucination
 SAMPLE_RATE = 16000
 FRAME_DURATION = 30  # ms
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)  # 480 samples
-VAD_MODE = 1  # 0-3 (1 = balanced; 3 was clipping words)
+VAD_MODE = 1  # More permissive for quiet speech and whispers.
 
-SILENCE_LIMIT_FRAMES = 40     # 1.2s silence ends command
-INITIAL_TIMEOUT_FRAMES = 200  # 200 * 30ms = 6s no-speech timeout
-PARTIAL_INTERVAL = 2.0        # Avoid repeated local inference calls
-MIN_PARTIAL_FRAMES = 60       # Need ~1.8s speech before a partial call
+SILENCE_LIMIT_FRAMES = 100    # 3.0s silence gives a clear 3-2-1 finalization timer
+INITIAL_TIMEOUT_FRAMES = 100  # 3.0s no-speech timeout, matching the countdown
+PARTIAL_INTERVAL = 1.25       # One lightweight preview before final transcription
+MIN_PARTIAL_FRAMES = 45       # Start preview after ~1.35s of speech
 MAX_PARTIAL_TRANSCRIPTIONS = 1  # One preview; final transcription is authoritative
 MIN_SPEECH_FRAMES = 8         # Ignore clips shorter than ~240ms
 
@@ -104,7 +104,10 @@ def _pcm_stats(pcm_bytes: bytes) -> tuple[float, float]:
 def is_audible_speech(pcm_bytes: bytes) -> bool:
     """Reject near-silent clips that make Whisper invent 'give me a minute'."""
     peak, rms = _pcm_stats(pcm_bytes)
-    return peak >= 1200 and rms >= 220
+    # Whispered speech can sit close to the microphone noise floor. WebRTC
+    # VAD remains the primary speech gate, so this check only rejects truly
+    # empty buffers rather than quiet human speech.
+    return peak >= 160 and rms >= 25
 
 
 def normalize_pcm(pcm_bytes: bytes) -> bytes:
@@ -112,11 +115,17 @@ def normalize_pcm(pcm_bytes: bytes) -> bytes:
     if not pcm_bytes:
         return pcm_bytes
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
-    peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
-    if peak < 800:
+    if not len(audio):
         return pcm_bytes
-    target = 22000.0
-    scaled = np.clip(audio * (target / peak), -32768, 32767).astype(np.int16)
+    # Remove DC offset and normalize by RMS so a quiet but well-spoken mic is
+    # lifted consistently; peak-only gain left many recordings too soft.
+    audio -= float(np.mean(audio))
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    peak = float(np.max(np.abs(audio)))
+    if rms < 25 or peak < 120:
+        return pcm_bytes
+    gain = min(8.0, 7000.0 / max(rms, 1.0))
+    scaled = np.clip(audio * gain, -30000, 30000).astype(np.int16)
     return scaled.tobytes()
 
 
@@ -152,8 +161,11 @@ def transcribe_local(pcm_bytes: bytes) -> str:
         segments, _ = model.transcribe(
             np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0,
             language="en",
+            # WebRTC VAD already gates and retains the audio. Running Whisper's
+            # second VAD here could trim quiet word endings and clipped names.
+            vad_filter=False,
             beam_size=1,
-            vad_filter=True,
+            temperature=0.0,
             condition_on_previous_text=False,
             initial_prompt="The assistant is named Jarvis.",
         )
@@ -232,8 +244,14 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                     break
                 continue
 
-            # Skip partial inference on very short audio — early results are inaccurate.
+            # Countdown-only updates must reach the UI even before enough audio
+            # exists for a reliable Whisper partial.
             if item["type"] == "partial" and len(audio_bytes) < MIN_PARTIAL_FRAMES * FRAME_SIZE * 2:
+                if partial_cb and item.get("countdown") is not None:
+                    try:
+                        partial_cb(last_ui_text[0], countdown=item.get("countdown"))
+                    except Exception:
+                        pass
                 continue
             if item["type"] == "partial" and partial_count >= MAX_PARTIAL_TRANSCRIPTIONS:
                 continue
@@ -268,6 +286,7 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
             channels=1,
             dtype="int16",
             blocksize=FRAME_SIZE,
+            latency="low",
         )
         with stream:
             buffer = []
@@ -323,7 +342,9 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                         last_partial_time = now
                         last_countdown = countdown_val
 
-                    if silence_counter > SILENCE_LIMIT_FRAMES or len(buffer) >= 800:
+                    # Permit long spoken requests; the old 24-second cap could
+                    # cut off the end of a paragraph or a WhatsApp message.
+                    if silence_counter > SILENCE_LIMIT_FRAMES or len(buffer) >= 2000:
                         if len(buffer) < MIN_SPEECH_FRAMES:
                             print("[STT Pipeline] Clip too short — ignoring.")
                             audio_queue.put({"type": "final", "data": b""})
@@ -337,8 +358,28 @@ def listen_stream(partial_cb=None, stop_event=None) -> str:
                         audio_queue.put({"type": "final", "data": b"".join(buffer)})
                         break
                 else:
+                    initial_limit_s = (INITIAL_TIMEOUT_FRAMES * FRAME_DURATION) / 1000.0
+                    initial_sil_s = (silence_counter * FRAME_DURATION) / 1000.0
+                    initial_countdown = (
+                        int(math.ceil(initial_limit_s - initial_sil_s))
+                        if 0.5 < initial_sil_s <= initial_limit_s
+                        else None
+                    )
+                    if initial_countdown is not None and initial_countdown != last_countdown:
+                        audio_queue.put({
+                            "type": "partial",
+                            "data": b"",
+                            "countdown": initial_countdown,
+                        })
+                        last_countdown = initial_countdown
+
                     if silence_counter > INITIAL_TIMEOUT_FRAMES:
                         print("[STT Pipeline] Initial timeout. No speech detected.")
+                        if partial_cb:
+                            try:
+                                partial_cb(last_ui_text[0], countdown=0)
+                            except Exception:
+                                pass
                         audio_queue.put({"type": "final", "data": b""})
                         break
 

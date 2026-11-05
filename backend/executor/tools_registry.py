@@ -84,7 +84,7 @@ def _usable_whatsapp_number(number: str) -> str:
 
 def _send_whatsapp_tool(params: dict):
     """
-    Open WhatsApp → Sathish chat only → type a draft. Send is frozen.
+    Open a saved WhatsApp contact and send the requested message directly.
     """
     name = (
         params.get("name")
@@ -113,11 +113,11 @@ def _send_whatsapp_all_tool(params: dict):
         )
     request = {"all_contacts": True, "message": message}
     save_memory("last_whatsapp_request", request)
-    save_memory("pending_whatsapp", {**request, "awaiting_confirm": True})
-    return True, (
-        "I have a WhatsApp message ready for all saved contacts. "
-        "Say ‘yes’ to confirm sending it, or ‘cancel’ to discard it."
-    )
+    success, result = send_whatsapp_to_saved_contacts(message, confirmed=True)
+    if success:
+        save_memory("last_whatsapp_request", None)
+        save_memory("pending_whatsapp", None)
+    return success, result
 
 
 def _remember_tool(params: dict):

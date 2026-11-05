@@ -39,6 +39,7 @@ export default function JarvisWorkspace() {
         isBackendOnline={jarvis.isBackendOnline}
         toggleMic={jarvis.toggleMic}
         speechTranscript={jarvis.speechTranscript}
+        sttStatus={jarvis.sttStatus}
         onSettingsClick={() => jarvis.setSettingsOpen(true)}
       />
 
@@ -65,6 +66,7 @@ export default function JarvisWorkspace() {
               sendMessage={jarvis.sendMessage}
               streamingText={jarvis.streamingText}
               speechTranscript={jarvis.speechTranscript}
+              sttStatus={jarvis.sttStatus}
               agentState={jarvis.agentState}
               isBackendOnline={jarvis.isBackendOnline}
               toggleMic={jarvis.toggleMic}

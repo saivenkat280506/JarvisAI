@@ -234,7 +234,10 @@ def _trim_to_speech(samples: np.ndarray, sample_rate: int, word_count: int) -> n
     start = max(0, int(voiced[0] - sample_rate * 0.02))
     end = min(samples.size, int(voiced[-1] + sample_rate * 0.18))
     trimmed = samples[start:end]
-    max_sec = min(12.0, max(1.1, word_count * 0.45 + 1.0))
+    # Do not impose a short utterance cap: long paragraphs are split into
+    # complete segments before synthesis, and cutting here caused the final
+    # words of otherwise valid speech to disappear.
+    max_sec = min(45.0, max(1.1, word_count * 0.75 + 2.0))
     max_n = int(max_sec * sample_rate)
     if trimmed.size > max_n:
         trimmed = trimmed[:max_n]
@@ -291,7 +294,24 @@ def _split_for_progressive(text: str) -> list[str]:
         parts = re.split(r"(?<=[,;:])\s+", text)
         parts = [p.strip() for p in parts if p and p.strip()]
     if not parts:
-        return [text]
+        parts = [text]
+
+    # A long sentence without punctuation still needs complete, manageable
+    # synthesis segments. Split only at whitespace so no words are dropped.
+    expanded: list[str] = []
+    for part in parts:
+        words = part.split()
+        buf = ""
+        for word in words:
+            candidate = f"{buf} {word}".strip()
+            if buf and len(candidate) > _MAX_SENTENCE_CHARS:
+                expanded.append(buf)
+                buf = word
+            else:
+                buf = candidate
+        if buf:
+            expanded.append(buf)
+    parts = expanded or [text]
     merged: list[str] = []
     buf = ""
     for p in parts:
@@ -314,9 +334,10 @@ def synthesize(text: str) -> tuple[np.ndarray, int]:
     if not clean_text:
         return np.zeros(0, dtype=np.float32), int(_model.sample_rate)
     word_count = max(1, len(clean_text.split()))
-    frames_after = 3 if word_count <= 8 else 2
-    # 12.5 Hz latents; enough headroom so short lines are not cut at 4s.
-    max_tokens = min(240, max(90, word_count * 10 + 50))
+    # Keep short confirmations responsive. The previous generous tail budget
+    # made every short sentence wait for unnecessary decoder frames.
+    frames_after = 2 if word_count <= 8 else 1
+    max_tokens = min(420, max(72, word_count * 10 + 44))
     chunks: list[np.ndarray] = []
     for chunk in _model.generate_audio_stream(
         model_state=_voice_state,
@@ -376,7 +397,11 @@ def _play_samples(samples: np.ndarray, model_rate: int) -> None:
             print(f"[TTS] Refusing resampled playback ({reason}) — protecting speakers.")
             return
     print(f"[TTS] Pocket play {reason} @ {playback_rate}Hz")
-    # Continuous stream avoids sd.play underruns between buffers.
+    # Continuous stream avoids sd.play underruns between buffers.  Keep a
+    # slightly larger default buffer: aggressive low-latency settings can
+    # underrun on Bluetooth devices and turn otherwise valid speech into
+    # clipped syllables or crackle.  Users can still opt into low latency
+    # with JARVIS_AUDIO_LATENCY=low.
     idx = 0
     n = int(samples.size)
     fade = max(1, int(playback_rate * 0.008))
@@ -408,10 +433,10 @@ def _play_samples(samples: np.ndarray, model_rate: int) -> None:
             dtype="float32",
             callback=_cb,
             blocksize=2048,
-            latency="high",
+            latency=os.environ.get("JARVIS_AUDIO_LATENCY", "high"),
         ):
             while idx < n and not _stop_event.is_set():
-                sd.sleep(20)
+                sd.sleep(10)
     except sd.CallbackStop:
         pass
     except Exception as exc:
